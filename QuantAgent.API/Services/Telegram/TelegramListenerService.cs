@@ -134,7 +134,7 @@ public class TelegramListenerService : BackgroundService
         }
         if (string.Equals(text, "/ingestar_hoy", StringComparison.OrdinalIgnoreCase))
         {
-            BackgroundJob.Enqueue<MatchIngestionJob>(x => x.ExecuteAsync());
+            BackgroundJob.Enqueue<MatchIngestionJob>(x => x.ExecuteAsync(default));
             await botClient.SendMessage(
                 chatId: message.Chat.Id,
                 text: "Modo cazador activado. Buscando partidos en las ligas activas...",
@@ -142,8 +142,31 @@ public class TelegramListenerService : BackgroundService
             return;
         }
 
+        if (string.Equals(text, "/emergency_stop", StringComparison.OrdinalIgnoreCase))
+        {
+            using var haltScope = _scopeFactory.CreateScope();
+            var safetyValve = haltScope.ServiceProvider.GetRequiredService<ISafetyValveService>();
+            safetyValve.SetManualHalt(true);
+            await botClient.SendMessage(
+                chatId: message.Chat.Id,
+                text: "🚨 Parada de emergencia activada. El sistema no generará nuevas predicciones. Usa /resume para reanudar.",
+                cancellationToken: cancellationToken);
+            _logger.LogWarning("[/emergency_stop] Manual halt activated by Telegram user {From}", from);
+            return;
+        }
 
-
+        if (string.Equals(text, "/resume", StringComparison.OrdinalIgnoreCase))
+        {
+            using var resumeScope = _scopeFactory.CreateScope();
+            var safetyValveResume = resumeScope.ServiceProvider.GetRequiredService<ISafetyValveService>();
+            safetyValveResume.SetManualHalt(false);
+            await botClient.SendMessage(
+                chatId: message.Chat.Id,
+                text: "✅ Sistema reanudado. El sistema continuará generando predicciones normalmente.",
+                cancellationToken: cancellationToken);
+            _logger.LogInformation("[/resume] Manual halt released by Telegram user {From}", from);
+            return;
+        }
         // Unknown command — log and ignore
         _logger.LogInformation("Unrecognized command from {From}: {Text}", from, text);
     }
@@ -196,7 +219,10 @@ public class TelegramListenerService : BackgroundService
                     text: "\u274C Ocurri\u00F3 un error al buscar estad\u00EDsticas. Intenta de nuevo m\u00E1s tarde.",
                     cancellationToken: cancellationToken);
             }
-            catch { /* best-effort */ }
+            catch (Exception exInner)
+            {
+                _logger.LogWarning(exInner, "Failed to send error notification to chat {ChatId}", chatId);
+            }
         }
     }
 
@@ -240,7 +266,10 @@ public class TelegramListenerService : BackgroundService
             {
                 await botClient.SendMessage(chatId: chatId, text: "\u274C Ocurri\u00F3 un error al consultar la memoria.", cancellationToken: cancellationToken);
             }
-            catch { /* best-effort */ }
+            catch (Exception exInner)
+            {
+                _logger.LogWarning(exInner, "Failed to send reglas error notification to chat {ChatId}", chatId);
+            }
         }
     }
 
@@ -284,7 +313,7 @@ public class TelegramListenerService : BackgroundService
             // Schedule Phase B verification 130 min after kick-off
             var scheduledAt = dto.FechaInicio.AddMinutes(130);
             BackgroundJob.Schedule<PostMatchVerificationJob>(
-                x => x.VerifyMatchAsync(partido.Id), scheduledAt);
+                x => x.VerifyMatchAsync(partido.Id, default), scheduledAt);
 
             // Enqueue Phase C analysis immediately
             BackgroundJob.Enqueue<ValueBetDetectionJob>(
@@ -311,7 +340,10 @@ public class TelegramListenerService : BackgroundService
                     text: errorMsg,
                     cancellationToken: cancellationToken);
             }
-            catch { /* best-effort */ }
+            catch (Exception exInner)
+            {
+                _logger.LogWarning(exInner, "Failed to send analizar error notification to chat {ChatId}", chatId);
+            }
         }
     }
 
@@ -375,7 +407,10 @@ public class TelegramListenerService : BackgroundService
                     text: $"Error al buscar '{teamName}': {ex.Message}",
                     cancellationToken: cancellationToken);
             }
-            catch { /* best-effort */ }
+            catch (Exception exInner)
+            {
+                _logger.LogWarning(exInner, "Failed to send buscar error notification to chat {ChatId}", chatId);
+            }
         }
     }
 
@@ -472,7 +507,10 @@ public class TelegramListenerService : BackgroundService
                     text: "Error al procesar. Intenta de nuevo.",
                     cancellationToken: cancellationToken);
             }
-            catch { /* best-effort */ }
+            catch (Exception exInner)
+            {
+                _logger.LogWarning(exInner, "Failed to answer feedback callback query for data: {Data}", callback.Data ?? "(null)");
+            }
         }
     }
 

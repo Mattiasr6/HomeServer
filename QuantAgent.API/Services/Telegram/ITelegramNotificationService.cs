@@ -15,6 +15,14 @@ public interface ITelegramNotificationService
     /// <param name="message">Plain text body of the alert.</param>
     /// <param name="ct">Cancellation token to abort the send.</param>
     Task SendAlertAsync(string message, CancellationToken ct = default);
+
+    /// <summary>
+    /// Sends an emergency safety alert (EMERGENCY_HALT, recovery, etc.).
+    /// </summary>
+    /// <param name="title">Alert title (e.g. "🚨 EMERGENCY HALT").</param>
+    /// <param name="details">Detailed message body.</param>
+    /// <param name="ct">Cancellation token.</param>
+    Task SendSafetyAlertAsync(string title, string details, CancellationToken ct = default);
     /// <summary>
     /// Sends a structured value-bet alert to the configured administrator.
     /// Includes market-specific emoji, confidence %, odds, and inline feedback buttons.

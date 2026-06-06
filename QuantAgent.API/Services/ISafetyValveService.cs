@@ -24,4 +24,25 @@ public interface ISafetyValveService
     /// Current system status based on daily loss vs bankroll * 5%.
     /// </summary>
     Task<SystemStatus> GetSystemStatusAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns the configured total bankroll amount.
+    /// </summary>
+    decimal GetBankrollTotal();
+
+    /// <summary>
+    /// Number of consecutive lost predictions (most recent first).
+    /// Used to detect statistical anomalies / cold streaks.
+    /// </summary>
+    Task<int> GetConsecutiveLossesAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns true if a manual emergency stop has been set via /emergency_stop.
+    /// </summary>
+    bool IsManuallyHalted { get; }
+
+    /// <summary>
+    /// Sets or clears the manual halt flag.
+    /// </summary>
+    void SetManualHalt(bool halted);
 }

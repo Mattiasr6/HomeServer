@@ -136,7 +136,7 @@ app.MapHangfireDashboard("/hangfire");
 // Recurring ingestion — every day at 08:00 UTC
 RecurringJob.AddOrUpdate<MatchIngestionJob>(
     "daily-match-ingestion",
-    x => x.ExecuteAsync(),
+    x => x.ExecuteAsync(default),
     "0 8 * * *",
     new RecurringJobOptions { TimeZone = TimeZoneInfo.Utc });
 

@@ -36,7 +36,7 @@ internal class SelfReflectionJob
     }
 
     [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300 })]
-    public async Task ReflectOnLossesAsync()
+    public async Task ReflectOnLossesAsync(CancellationToken ct = default)
     {
         _logger.LogInformation("[Reflection] Starting auto-reflection for unanalyzed losses");
 
@@ -44,13 +44,13 @@ internal class SelfReflectionJob
         var losses = await _db.Predicciones
             .Include(p => p.Partido)
             .Where(p => p.Estado == EstadoPrediccion.Perdida)
-            .ToListAsync();
+            .ToListAsync(ct);
 
         // Exclude predicciones already analyzed (have a ReglaAprendida referencing them)
         var analyzedIds = await _db.ReglasAprendidas
             .Where(r => r.PrediccionId != null)
             .Select(r => r.PrediccionId!.Value)
-            .ToListAsync();
+            .ToListAsync(ct);
 
         var unanalyzed = losses.Where(p => !analyzedIds.Contains(p.Id)).ToList();
 
@@ -64,14 +64,15 @@ internal class SelfReflectionJob
 
         foreach (var prediccion in unanalyzed)
         {
-            await AnalyzeLossAsync(prediccion);
+            await AnalyzeLossAsync(prediccion, ct);
         }
 
         _logger.LogInformation("[Reflection] Done. Analyzed {Count} loss(es)", unanalyzed.Count);
     }
 
-    private async Task AnalyzeLossAsync(Prediccion prediccion)
+    private async Task AnalyzeLossAsync(Prediccion prediccion, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         var partido = prediccion.Partido
             ?? throw new InvalidOperationException(
                 $"Prediccion {prediccion.Id} has no Partido loaded.");
@@ -84,8 +85,7 @@ internal class SelfReflectionJob
                 : "Empate";
 
         // Fetch current stats for RAG context (scraper cache serves fast)
-        var statsContext = await FetchStatsForTeamAsync(equipo);
-
+        var statsContext = await FetchStatsForTeamAsync(equipo, ct);
         var reflectionPrompt = BuildReflectionPrompt(prediccion, partido, statsContext);
 
         ReflectionResult result;
@@ -117,18 +117,18 @@ internal class SelfReflectionJob
         };
 
         _db.ReglasAprendidas.Add(rule);
-        await _db.SaveChangesAsync();
+        await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation(
             "[Reflection] Saved rule for {Team}: '{Rule}' (from prediction {PredId})",
             equipo, rule.Regla, prediccion.Id);
     }
 
-    private async Task<string> FetchStatsForTeamAsync(string teamName)
+    private async Task<string> FetchStatsForTeamAsync(string teamName, CancellationToken ct)
     {
         foreach (var league in AllLeagues)
         {
-            var stats = await _scraper.GetTeamStatsAsync(teamName, league);
+            var stats = await _scraper.GetTeamStatsAsync(teamName, league, ct);
             if (stats is not null)
             {
                 return $"Pos:{stats.Posicion} Pts:{stats.Puntos} GF:{stats.GolesFavor} GC:{stats.GolesContra} Over25:{stats.Over25}";

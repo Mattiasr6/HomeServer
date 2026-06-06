@@ -13,6 +13,11 @@ namespace QuantAgent.API.Jobs;
 /// the partido to <see cref="EstadoPartido.Finalizado"/>.
 /// If the fixture hasn't finished yet, the job throws so Hangfire
 /// retries with exponential backoff.
+/// <para>
+/// Evaluates ALL predictions for the match (Ganador, Goles markets).
+/// Corners market evaluation requires separate /fixtures/statistics API call
+/// and is deferred until that data is available — predictions remain Pendiente.
+/// </para>
 /// </summary>
 public class PostMatchVerificationJob
 {
@@ -30,11 +35,11 @@ public class PostMatchVerificationJob
     }
 
     [AutomaticRetry(Attempts = 5, DelaysInSeconds = new[] { 30, 60, 120, 300 })]
-    public async Task VerifyMatchAsync(Guid partidoId)
+    public async Task VerifyMatchAsync(Guid partidoId, CancellationToken ct = default)
     {
         _logger.LogInformation("[Phase B] Verifying match {Id}", partidoId);
 
-        var partido = await _db.Partidos.FindAsync(partidoId);
+        var partido = await _db.Partidos.FindAsync(new object[] { partidoId }, ct);
         if (partido is null)
         {
             _logger.LogWarning("[Phase B] Match {Id} not found — skipping", partidoId);
@@ -59,37 +64,130 @@ public class PostMatchVerificationJob
         partido.GolesVisitante = golesVisitante;
         partido.UpdatedAt = DateTime.UtcNow;
 
-        await _db.SaveChangesAsync();
+        await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation(
             "[Phase B] Match {Id} finalized: {Local} {Gl}-{Gv} {Visitante}",
             partido.Id, partido.EquipoLocal, partido.GolesLocal, partido.GolesVisitante, partido.EquipoVisitante);
 
-        // --- Evaluate prediction outcome ----------------------------------------
-        var prediccion = await _db.Predicciones
-            .FirstOrDefaultAsync(p => p.PartidoId == partido.Id);
+        // --- Evaluate ALL prediction outcomes for this match ------------------
+        var predicciones = await _db.Predicciones
+            .Where(p => p.PartidoId == partido.Id)
+            .ToListAsync(ct);
 
-        if (prediccion is not null)
+        if (predicciones.Count == 0)
         {
-            bool ganada;
-            if (prediccion.Seleccion == partido.EquipoLocal)
-                ganada = partido.GolesLocal > partido.GolesVisitante;
-            else if (prediccion.Seleccion == partido.EquipoVisitante)
-                ganada = partido.GolesVisitante > partido.GolesLocal;
-            else // "Empate"
-                ganada = partido.GolesLocal == partido.GolesVisitante;
+            _logger.LogInformation("[Phase B] No predictions found for match {Id}", partidoId);
+            return;
+        }
 
-            prediccion.Estado = ganada ? EstadoPrediccion.Ganada : EstadoPrediccion.Perdida;
-            prediccion.UpdatedAt = DateTime.UtcNow;
+        var evaluated = 0;
+        var skippedCorners = 0;
+        var hasLoss = false;
 
-            await _db.SaveChangesAsync();
+        foreach (var prediccion in predicciones)
+        {
+            if (prediccion.Estado != EstadoPrediccion.Pendiente)
+            {
+                _logger.LogDebug(
+                    "[Phase B] Prediction {PredId} already {Estado} — skipping",
+                    prediccion.Id, prediccion.Estado);
+                continue;
+            }
+
+            switch (prediccion.Mercado)
+            {
+                case TipoMercado.Ganador:
+                    prediccion.Estado = EvaluateGanador(prediccion, partido);
+                    prediccion.UpdatedAt = DateTime.UtcNow;
+                    evaluated++;
+                    break;
+
+                case TipoMercado.Goles:
+                    prediccion.Estado = EvaluateGoles(prediccion, partido);
+                    prediccion.UpdatedAt = DateTime.UtcNow;
+                    evaluated++;
+                    break;
+
+                case TipoMercado.Corners:
+                    // Corners evaluation needs actual corners statistics from
+                    // API-Football /fixtures/statistics endpoint, which is not
+                    // yet implemented in FootballApiService. Keep as Pendiente
+                    // and log so we can track the gap.
+                    _logger.LogWarning(
+                        "[Phase B] Prediction {PredId} (Corners) for match {Id} cannot be evaluated " +
+                        "— no corners statistics available from API yet. Remains Pendiente.",
+                        prediccion.Id, partidoId);
+                    skippedCorners++;
+                    break;
+            }
+
+            if (prediccion.Estado == EstadoPrediccion.Perdida)
+                hasLoss = true;
 
             _logger.LogInformation(
-                "[Phase B] Prediction {PredId}: {Seleccion} → {Result}",
-                prediccion.Id, prediccion.Seleccion, prediccion.Estado);
+                "[Phase B] Prediction {PredId} market={Market} sel={Sel} → {Result}",
+                prediccion.Id, prediccion.Mercado, prediccion.Seleccion, prediccion.Estado);
+        }
+
+        if (evaluated > 0 || skippedCorners > 0)
+        {
+            await _db.SaveChangesAsync(ct);
+            _logger.LogInformation(
+                "[Phase B] Done for match {Id}: evaluated={Evaluated} corners_skipped={CornersSkipped}",
+                partidoId, evaluated, skippedCorners);
         }
 
         // Enqueue self-reflection to learn from any losses
-        BackgroundJob.Enqueue<SelfReflectionJob>(j => j.ReflectOnLossesAsync());
+        if (hasLoss)
+        {
+            BackgroundJob.Enqueue<SelfReflectionJob>(j => j.ReflectOnLossesAsync(default));
+        }
+    }
+
+    /// <summary>
+    /// Evaluates a Ganador (Match Winner) prediction against the actual score.
+    /// </summary>
+    private static EstadoPrediccion EvaluateGanador(Prediccion prediccion, Partido partido)
+    {
+        if (prediccion.Seleccion == partido.EquipoLocal)
+            return partido.GolesLocal > partido.GolesVisitante
+                ? EstadoPrediccion.Ganada
+                : EstadoPrediccion.Perdida;
+
+        if (prediccion.Seleccion == partido.EquipoVisitante)
+            return partido.GolesVisitante > partido.GolesLocal
+                ? EstadoPrediccion.Ganada
+                : EstadoPrediccion.Perdida;
+
+        // "Empate" or unknown selection
+        return partido.GolesLocal == partido.GolesVisitante
+            ? EstadoPrediccion.Ganada
+            : EstadoPrediccion.Perdida;
+    }
+
+    /// <summary>
+    /// Evaluates a Goles (Over/Under goals) prediction against actual total goals.
+    /// TotalGoals threshold is set by the inference service (typically 2.5).
+    /// </summary>
+    private static EstadoPrediccion EvaluateGoles(Prediccion prediccion, Partido partido)
+    {
+        if (prediccion.TotalGoals <= 0)
+        {
+            // No threshold stored — cannot evaluate fairly
+            return EstadoPrediccion.Pendiente;
+        }
+
+        var totalGoals = partido.GolesLocal + partido.GolesVisitante;
+        var isOver = string.Equals(prediccion.Seleccion, "Over", StringComparison.OrdinalIgnoreCase);
+
+        if (isOver)
+            return totalGoals > prediccion.TotalGoals
+                ? EstadoPrediccion.Ganada
+                : EstadoPrediccion.Perdida;
+        else
+            return totalGoals <= prediccion.TotalGoals
+                ? EstadoPrediccion.Ganada
+                : EstadoPrediccion.Perdida;
     }
 }

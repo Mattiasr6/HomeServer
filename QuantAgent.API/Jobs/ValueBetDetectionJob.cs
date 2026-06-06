@@ -260,7 +260,7 @@ internal class ValueBetDetectionJob
 
         // Fetch all odds in parallel
         var oddsTask = partido.FixtureId.HasValue
-            ? FetchAllOddsAsync(partido.FixtureId.Value)
+            ? FetchAllOddsAsync(partido.FixtureId.Value, ct)
             : Task.FromResult(new AllOddsDto());
 
         var allOdds = await oddsTask;
@@ -529,7 +529,7 @@ internal class ValueBetDetectionJob
         public decimal GoalsUnder { get; init; }
     }
 
-    private async Task<AllOddsDto> FetchAllOddsAsync(int fixtureId)
+    private async Task<AllOddsDto> FetchAllOddsAsync(int fixtureId, CancellationToken ct)
     {
         var (cuotaLocal, cuotaEmpate, cuotaVisita) = await _footballApi.GetMatchOddsAsync(fixtureId);
         var (cornersOver, cornersUnder) = await _footballApi.GetCornersOddsAsync(fixtureId);

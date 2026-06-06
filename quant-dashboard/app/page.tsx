@@ -1,14 +1,15 @@
-import { getDashboardStats, getActivePredictions, getPredictionHistory } from "@/lib/api";
+import { getDashboardStats, getActivePredictions, getPredictionHistory, getSafetyStatus } from "@/lib/api";
 import StatsGrid from "@/components/StatsGrid";
 import PredictionsTable from "@/components/PredictionsTable";
 import ControlPanel from "@/components/ControlPanel";
 import Terminal from "@/components/Terminal";
 
 export default async function DashboardPage() {
-  const [stats, activePredictions, historyPredictions] = await Promise.all([
+  const [stats, activePredictions, historyPredictions, safety] = await Promise.all([
     getDashboardStats(),
     getActivePredictions(),
     getPredictionHistory(),
+    getSafetyStatus(),
   ]);
 
   return (
@@ -28,8 +29,8 @@ export default async function DashboardPage() {
         </span>
       </header>
 
-      {/* Control panel */}
-      <ControlPanel />
+      {/* Control panel + safety banner */}
+      <ControlPanel initialSafety={safety} />
 
       {/* Dashboard stats (WinRate, Yield, ROI) */}
       <StatsGrid data={stats} />

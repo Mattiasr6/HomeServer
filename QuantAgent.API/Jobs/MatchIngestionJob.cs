@@ -38,7 +38,7 @@ public class MatchIngestionJob
     /// leagues (ActiveLeagues from appsettings), persists them,
     /// </summary>
     [AutomaticRetry(Attempts = 3)]
-    public async Task ExecuteAsync()
+    public async Task ExecuteAsync(CancellationToken ct = default)
     {
         _logger.LogInformation("[Phase A] Starting daily match ingestion at {Time:o}", DateTime.UtcNow);
 
@@ -55,6 +55,7 @@ public class MatchIngestionJob
         var todayStart = DateTime.UtcNow.Date;
         var alreadyIngested = await _db.Partidos
             .AnyAsync(p => p.FechaInicio >= todayStart);
+        if (alreadyIngested)
 
         if (alreadyIngested)
         {
@@ -75,7 +76,7 @@ public class MatchIngestionJob
         }
 
         var fixtures = await _dataAggregator.GetDailyFixturesAsync(
-            DateTime.UtcNow, leagues, CancellationToken.None);
+            DateTime.UtcNow, leagues, ct);
 
         if (fixtures.Count == 0)
         {
@@ -116,7 +117,7 @@ public class MatchIngestionJob
             // Schedule Phase B to run 130 minutes after real kick-off
             var scheduledAt = dto.FechaInicio.AddMinutes(130);
             var jobId = BackgroundJob.Schedule<PostMatchVerificationJob>(
-                x => x.VerifyMatchAsync(partido.Id), scheduledAt);
+                x => x.VerifyMatchAsync(partido.Id, default), scheduledAt);
 
             _logger.LogInformation(
                 "[Phase A] Ingested fixture {FixtureId}: {Local} vs {Visitante} @ {KickOff:o} | Verification job {JobId} @ {ScheduledAt:o}",

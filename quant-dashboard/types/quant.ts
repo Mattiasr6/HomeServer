@@ -43,3 +43,13 @@ export interface DashboardStatsDto {
   averageOdds: number;
   initialBankroll: number;
 }
+
+export interface SafetyStatusDto {
+  status: string;
+  dailyLoss: number;
+  bankroll: number;
+  threshold: number;
+  consecutiveLosses: number;
+  manuallyHalted: boolean;
+  lastAlert: string | null;
+}

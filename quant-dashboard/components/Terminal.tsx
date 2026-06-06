@@ -21,19 +21,18 @@ const LEVEL_BADGE: Record<string, string> = {
   ERROR: "bg-rose-600/30 text-rose-300 border-rose-700/50",
 };
 
-const CLIENT_BASE =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5259";
+// Derive SignalR hub URL from NEXT_PUBLIC_API_URL, stripping any /api suffix
+const API_ORIGIN =
+  (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5259").replace(/\/api$/, "");
+const HUB_URL = `${API_ORIGIN}/hubs/logging`;
 
 export default function Terminal() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const [connected, setConnected] = useState(false);
-
   useEffect(() => {
-    const hubUrl = CLIENT_BASE.replace("/api", "/hubs/logging");
-
     const connection = new signalR.HubConnectionBuilder()
-      .withUrl(hubUrl)
+      .withUrl(HUB_URL)
       .withAutomaticReconnect([0, 2000, 5000, 10000, 30000])
       .configureLogging(signalR.LogLevel.Warning)
       .build();
@@ -45,12 +44,11 @@ export default function Terminal() {
       });
     });
 
-    connection
-      .start()
+    connection.start()
       .then(() => setConnected(true))
-      .catch((err) =>
-        console.warn("[Terminal] SignalR connection failed:", err),
-      );
+      .catch((err) => {
+        console.warn("[Terminal] SignalR connection failed:", err);
+      });
 
     return () => {
       connection.stop();

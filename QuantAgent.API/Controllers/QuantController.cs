@@ -32,7 +32,7 @@ public class QuantController : ControllerBase
     public IActionResult ForceIngest()
     {
         _logger.LogInformation("[Quant] Forced ingestion triggered from dashboard");
-        BackgroundJob.Enqueue<MatchIngestionJob>(x => x.ExecuteAsync());
+        BackgroundJob.Enqueue<MatchIngestionJob>(x => x.ExecuteAsync(default));
         return Ok(new { message = "Ingesta encolada correctamente." });
     }
 

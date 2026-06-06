@@ -1,4 +1,4 @@
-import type { KpiDto, PredictionDto, DashboardStatsDto } from "@/types/quant";
+import type { KpiDto, PredictionDto, DashboardStatsDto, SafetyStatusDto } from "@/types/quant";
 
 /*
  * SSR functions (getKpis, getActivePredictions, getPredictionHistory)
@@ -101,6 +101,25 @@ export async function getDashboardStats(): Promise<DashboardStatsDto> {
       monthlyRoi: 0,
       averageOdds: 0,
       initialBankroll: 1000,
+    };
+  }
+}
+
+/* ---- Safety status (SSR) ---- */
+
+export async function getSafetyStatus(): Promise<SafetyStatusDto> {
+  try {
+    return await fetchJson<SafetyStatusDto>(`${SSR_BASE}/stats/safety`);
+  } catch {
+    console.warn("[api] getSafetyStatus fallback: backend unreachable");
+    return {
+      status: "NORMAL",
+      dailyLoss: 0,
+      bankroll: 1000,
+      threshold: 50,
+      consecutiveLosses: 0,
+      manuallyHalted: false,
+      lastAlert: null,
     };
   }
 }

@@ -203,4 +203,27 @@ public class TelegramNotificationService : ITelegramNotificationService
                 partido.EquipoLocal, partido.EquipoVisitante);
         }
     }
+
+    public async Task SendSafetyAlertAsync(string title, string details, CancellationToken ct = default)
+    {
+        try
+        {
+            var text = $"⚠ *{title}* ⚠\n\n{details}";
+            await _bot.SendMessage(
+                chatId: _chatId,
+                text: text,
+                parseMode: ParseMode.Markdown,
+                cancellationToken: ct);
+
+            _logger.LogInformation(
+                "Safety alert sent: {Title} ({Length} chars) to chat {ChatId}",
+                title, text.Length, _chatId);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to send safety alert '{Title}' to chat {ChatId}",
+                title, _chatId);
+        }
+    }
 }
