@@ -19,7 +19,8 @@ builder.Services.AddCors(options =>
     options.AddPolicy("AllowNextJs", policy =>
         policy.WithOrigins("http://localhost:3000", "http://localhost:4000", "http://100.78.144.4:4000")
             .AllowAnyMethod()
-            .AllowAnyHeader()));
+            .AllowAnyHeader()
+            .AllowCredentials()));
 builder.Services.AddSwaggerGen();
 
 // Database (PostgreSQL via Npgsql + EF Core)
@@ -44,17 +45,17 @@ builder.Services.AddScoped<MatchIngestionJob>();
 builder.Services.AddScoped<PostMatchVerificationJob>();
 builder.Services.AddScoped<ValueBetDetectionJob>();
 builder.Services.AddScoped<SelfReflectionJob>();
+builder.Services.AddScoped<KeyHealthCheckJob>();
 
-// Typed HTTP client for API-Football v3
+// Typed HTTP client for API-Football v3. The API key is now resolved
+// dynamically via IKeyRotationService (Order #34), so the
+// x-apisports-key header is set per-request, not globally.
 builder.Services.AddHttpClient<FootballApiService>(client =>
 {
     client.BaseAddress = new Uri("https://v3.football.api-sports.io/");
-    var apiKey = builder.Configuration["ApiSportsKey"] ?? "dummy-key-replace-me";
-    if (!client.DefaultRequestHeaders.Contains("x-apisports-key"))
-    {
-        client.DefaultRequestHeaders.Add("x-apisports-key", apiKey);
-    }
 });
+builder.Services.AddSingleton<IKeyRotationService, KeyRotationService>();
+builder.Services.AddSingleton<IBankrollManagementService, BankrollManagementService>();
 
 // Telegram bot (singleton — wraps a long-lived HttpClient)
 builder.Services.AddSingleton<ITelegramBotClient>(sp =>
@@ -65,6 +66,10 @@ builder.Services.AddSingleton<ITelegramBotClient>(sp =>
 });
 builder.Services.AddSingleton<ITelegramNotificationService, TelegramNotificationService>();
 builder.Services.AddHostedService<TelegramListenerService>();
+
+// SignalR hub for real-time dashboard telemetry (Order #36)
+builder.Services.AddSignalR();
+builder.Services.AddSingleton<ITelemetryService, TelemetryService>();
 
 // Inference: local Ollama (llama3.2). Read endpoint from configuration,
 // defaulting to http://127.0.0.1:11434/ for local dev. In production Docker,
@@ -93,6 +98,23 @@ builder.Services.AddSingleton<ISoccerStatsScraperService, SoccerStatsScraperServ
     return new SoccerStatsScraperService(client, logger);
 });
 
+// Order #37: Multi-source odds pipeline — TheOddsAPI as secondary provider,
+// odds comparator for cross-source validation, and data aggregator coordinator.
+builder.Services.AddHttpClient<IAlternativeOddsService, AlternativeOddsService>(client =>
+{
+    client.BaseAddress = new Uri("https://api.the-odds-api.com/");
+    client.Timeout = TimeSpan.FromSeconds(15);
+});
+builder.Services.AddSingleton<OddsComparatorService>();
+builder.Services.AddScoped<IDataAggregatorService, DataAggregatorService>();
+
+// Order #37: Playwright-based sentiment scraper + Ollama sentiment analysis.
+builder.Services.AddScoped<ISentimentScraperService, SentimentScraperService>();
+builder.Services.AddScoped<ISentimentAnalysisService, SentimentAnalysisService>();
+
+// Order #38: circuit breaker + heartbeat + discrepancy detection
+builder.Services.AddSingleton<ISafetyValveService, SafetyValveService>();
+builder.Services.AddHostedService<HeartbeatService>();
 
 var app = builder.Build();
 
@@ -106,6 +128,7 @@ if (app.Environment.IsDevelopment())
 app.UseCors("AllowNextJs");
 app.UseAuthorization();
 app.MapControllers();
+app.MapHub<QuantAgent.API.Hubs.LoggingHub>(QuantAgent.API.Hubs.LoggingHub.Route);
 
 // Hangfire dashboard (server is started via AddHangfireServer above)
 app.MapHangfireDashboard("/hangfire");
@@ -115,6 +138,14 @@ RecurringJob.AddOrUpdate<MatchIngestionJob>(
     "daily-match-ingestion",
     x => x.ExecuteAsync(),
     "0 8 * * *",
+    new RecurringJobOptions { TimeZone = TimeZoneInfo.Utc });
+
+// Recurring key health check — every 24 hours at 12:00 UTC
+// Tests limited API keys and reactivates them when the rate window resets.
+RecurringJob.AddOrUpdate<KeyHealthCheckJob>(
+    "key-health-check",
+    x => x.ExecuteAsync(CancellationToken.None),
+    "0 12 * * *",
     new RecurringJobOptions { TimeZone = TimeZoneInfo.Utc });
 
 // E2E test trigger: fire the recurring job immediately on startup so the full pipeline

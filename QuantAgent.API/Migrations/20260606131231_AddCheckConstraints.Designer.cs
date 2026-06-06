@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using QuantAgent.API.Data;
@@ -11,9 +12,11 @@ using QuantAgent.API.Data;
 namespace QuantAgent.API.Migrations
 {
     [DbContext(typeof(QuantDbContext))]
-    partial class QuantDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260606131231_AddCheckConstraints")]
+    partial class AddCheckConstraints
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -21,60 +24,6 @@ namespace QuantAgent.API.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
-
-            modelBuilder.Entity("QuantAgent.API.Models.ApiKey", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at");
-
-                    b.Property<string>("Deporte")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)")
-                        .HasColumnName("deporte");
-
-                    b.Property<int>("Estado")
-                        .HasColumnType("integer")
-                        .HasColumnName("estado");
-
-                    b.Property<int>("Exitos")
-                        .HasColumnType("integer")
-                        .HasColumnName("exitos");
-
-                    b.Property<int>("Fallos")
-                        .HasColumnType("integer")
-                        .HasColumnName("fallos");
-
-                    b.Property<string>("Key")
-                        .IsRequired()
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
-                        .HasColumnName("key");
-
-                    b.Property<DateTime>("UltimoUso")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("ultimo_uso");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("updated_at");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("Deporte")
-                        .HasDatabaseName("ix_api_keys_deporte");
-
-                    b.HasIndex("Estado")
-                        .HasDatabaseName("ix_api_keys_estado");
-
-                    b.ToTable("api_keys", (string)null);
-                });
 
             modelBuilder.Entity("QuantAgent.API.Models.Partido", b =>
                 {
@@ -156,12 +105,6 @@ namespace QuantAgent.API.Migrations
                         .HasColumnType("numeric(10,3)")
                         .HasColumnName("cuota");
 
-                    b.Property<bool>("DataAnomaly")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false)
-                        .HasColumnName("data_anomaly");
-
                     b.Property<int>("Estado")
                         .HasColumnType("integer")
                         .HasColumnName("estado");
@@ -185,9 +128,6 @@ namespace QuantAgent.API.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)")
                         .HasColumnName("seleccion");
-
-                    b.Property<decimal>("StakeSugerido")
-                        .HasColumnType("numeric");
 
                     b.Property<decimal>("TotalGoals")
                         .HasColumnType("numeric(5,1)")

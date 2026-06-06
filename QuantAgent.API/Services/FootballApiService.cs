@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -9,12 +10,14 @@ namespace QuantAgent.API.Services;
 /// <summary>
 /// Typed HTTP client for the API-Football v3 service
 /// (<see href="https://v3.football.api-sports.io/"/>).
-/// The base address and <c>x-apisports-key</c> header are wired
-/// at registration time in <c>Program.cs</c> from configuration.
+/// The API key is resolved dynamically via
+/// <see cref="IKeyRotationService"/> so the system can rotate
+/// between multiple keys when 429 (Rate Limit) is received.
 /// </summary>
 public class FootballApiService
 {
     private readonly HttpClient _httpClient;
+    private readonly IKeyRotationService _keyRotation;
     private readonly ILogger<FootballApiService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -22,9 +25,15 @@ public class FootballApiService
         PropertyNameCaseInsensitive = true,
     };
 
-    public FootballApiService(HttpClient httpClient, ILogger<FootballApiService> logger)
+    private const string Deporte = "football";
+
+    public FootballApiService(
+        HttpClient httpClient,
+        IKeyRotationService keyRotation,
+        ILogger<FootballApiService> logger)
     {
         _httpClient = httpClient;
+        _keyRotation = keyRotation;
         _logger = logger;
     }
 
@@ -35,7 +44,7 @@ public class FootballApiService
     /// </summary>
     public async Task<(int GolesLocal, int GolesVisitante, EstadoPartido Estado)> GetMatchResultAsync(int fixtureId)
     {
-        var response = await _httpClient.GetAsync($"/fixtures?id={fixtureId}");
+        using var response = await SendWithKeyRotationAsync(HttpMethod.Get, $"/fixtures?id={fixtureId}");
         response.EnsureSuccessStatusCode();
 
         var doc = await response.Content.ReadFromJsonAsync<FixtureApiResponse>(JsonOptions);
@@ -72,7 +81,7 @@ public class FootballApiService
         DateTime date, int[] leagueIds)
     {
         var dateStr = date.ToString("yyyy-MM-dd");
-        var response = await _httpClient.GetAsync($"/fixtures?date={dateStr}");
+        using var response = await SendWithKeyRotationAsync(HttpMethod.Get, $"/fixtures?date={dateStr}");
         response.EnsureSuccessStatusCode();
 
         var doc = await response.Content.ReadFromJsonAsync<DailyFixturesResponse>(JsonOptions);
@@ -102,7 +111,7 @@ public class FootballApiService
     /// </summary>
     public async Task<PartidoExternoDto> GetFixtureByIdAsync(int fixtureId)
     {
-        var response = await _httpClient.GetAsync($"/fixtures?id={fixtureId}");
+        using var response = await SendWithKeyRotationAsync(HttpMethod.Get, $"/fixtures?id={fixtureId}");
         response.EnsureSuccessStatusCode();
 
         var doc = await response.Content.ReadFromJsonAsync<DailyFixturesResponse>(JsonOptions);
@@ -126,7 +135,7 @@ public class FootballApiService
     public async Task<List<PartidoExternoDto>> GetAllFixturesTodayAsync()
     {
         var dateStr = DateTime.UtcNow.ToString("yyyy-MM-dd");
-        var response = await _httpClient.GetAsync($"/fixtures?date={dateStr}");
+        using var response = await SendWithKeyRotationAsync(HttpMethod.Get, $"/fixtures?date={dateStr}");
         response.EnsureSuccessStatusCode();
 
         var doc = await response.Content.ReadFromJsonAsync<DailyFixturesResponse>(JsonOptions);
@@ -141,8 +150,6 @@ public class FootballApiService
             LeagueId: f.League.Id)).ToList();
     }
 
-
-
     /// <summary>
     /// Fetches Bet365 odds for a fixture from API-Football.
     /// Returns (0, 0, 0) if odds are not yet published or the
@@ -150,7 +157,13 @@ public class FootballApiService
     /// </summary>
     public async Task<(decimal CuotaLocal, decimal CuotaEmpate, decimal CuotaVisita)> GetMatchOddsAsync(int fixtureId)
     {
-        var response = await _httpClient.GetAsync($"/odds?fixture={fixtureId}&bookmaker=8");
+        using var response = await SendWithKeyRotationAsync(HttpMethod.Get, $"/odds?fixture={fixtureId}&bookmaker=8");
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            _logger.LogInformation("No odds found for fixture {FixtureId}", fixtureId);
+            return (0m, 0m, 0m);
+        }
         response.EnsureSuccessStatusCode();
 
         var doc = await response.Content.ReadFromJsonAsync<OddsApiResponse>(JsonOptions);
@@ -230,7 +243,12 @@ public class FootballApiService
     private async Task<(decimal OverOdds, decimal UnderOdds)> GetOverUnderOddsAsync(
         int fixtureId, string[] marketNames)
     {
-        var response = await _httpClient.GetAsync($"/odds?fixture={fixtureId}&bookmaker=8");
+        using var response = await SendWithKeyRotationAsync(HttpMethod.Get, $"/odds?fixture={fixtureId}&bookmaker=8");
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return (0m, 0m);
+        }
         response.EnsureSuccessStatusCode();
 
         var doc = await response.Content.ReadFromJsonAsync<OddsApiResponse>(JsonOptions);
@@ -268,6 +286,47 @@ public class FootballApiService
             fixtureId, market.Name, overOdd, underOdd);
 
         return (overOdd, underOdd);
+    }
+
+    /// <summary>
+    /// Core helper: resolves a valid API key via <see cref="IKeyRotationService"/>,
+    /// builds a request with the dynamic <c>x-apisports-key</c> header, sends it,
+    /// and handles 429 (Rate Limit) by marking the key as Limited and throwing.
+    /// On success, records the usage.
+    /// </summary>
+    private async Task<HttpResponseMessage> SendWithKeyRotationAsync(
+        HttpMethod method, string path)
+    {
+        var key = await _keyRotation.GetValidKeyAsync(Deporte);
+
+        using var request = new HttpRequestMessage(method, path);
+        request.Headers.Remove("x-apisports-key");
+        request.Headers.Add("x-apisports-key", key.Key);
+
+        var response = await _httpClient.SendAsync(request);
+
+        if (response.StatusCode == HttpStatusCode.TooManyRequests)
+        {
+            await _keyRotation.MarkAsLimitedAsync(key.Id);
+            _logger.LogWarning(
+                "[KEYROTATION] Key {KeyId} rate-limited (429) on {Method} {Path}. " +
+                "Rotation triggered — next call will use a different key.",
+                key.Id, method, path);
+            throw new HttpRequestException(
+                $"API-Football rate limit exceeded on {method} {path}. Key {key.Id} marked as Limited.",
+                null, HttpStatusCode.TooManyRequests);
+        }
+
+        if (response.IsSuccessStatusCode)
+        {
+            await _keyRotation.RecordSuccessAsync(key.Id);
+        }
+        else
+        {
+            await _keyRotation.RecordFailureAsync(key.Id);
+        }
+
+        return response;
     }
 
     // ---------- API-Football wire types ----------------------------------------
@@ -355,4 +414,3 @@ public class FootballApiService
         [property: JsonPropertyName("value"), JsonConverter(typeof(StringOrNumberConverter))] string Value,
         [property: JsonPropertyName("odd")] string Odd);
 }
-

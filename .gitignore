@@ -44,6 +44,5 @@ Thumbs.db
 # ───── OpenCode agent workspace ─────────────────────────────────────────────
 .omo/
 
-# ───── Coolify deployment guide (user-filled secrets placeholder) ──────────
-# COOLIFY_DEPLOY_GUIDE.md is kept tracked — it contains no secrets,
-# only placeholders like {{TAILSCALE_IP}} and {{DB_PASSWORD}}.
+# ───── Coolify MCP ───────────────────────────────────────────────────────────
+coolify-mcp-server/

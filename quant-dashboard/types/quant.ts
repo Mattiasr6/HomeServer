@@ -29,3 +29,17 @@ export interface PredictionDto {
   cornersOverUnder: number;
   totalGoals: number;
 }
+
+export interface DashboardStatsDto {
+  totalPredictions: number;
+  resolvedBets: number;
+  pendingBets: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  yield: number;
+  netProfitUnits: number;
+  monthlyRoi: number;
+  averageOdds: number;
+  initialBankroll: number;
+}

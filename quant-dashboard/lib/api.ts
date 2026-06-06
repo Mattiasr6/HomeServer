@@ -1,4 +1,4 @@
-import type { KpiDto, PredictionDto } from "@/types/quant";
+import type { KpiDto, PredictionDto, DashboardStatsDto } from "@/types/quant";
 
 /*
  * SSR functions (getKpis, getActivePredictions, getPredictionHistory)
@@ -80,4 +80,27 @@ export async function analyzeFailure(
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.message ?? `Error ${res.status}`);
   return body;
+}
+
+/* ---- Dashboard stats (SSR) ---- */
+
+export async function getDashboardStats(): Promise<DashboardStatsDto> {
+  try {
+    return await fetchJson<DashboardStatsDto>(`${SSR_BASE}/stats/dashboard`);
+  } catch {
+    console.warn("[api] getDashboardStats fallback: backend unreachable");
+    return {
+      totalPredictions: 0,
+      resolvedBets: 0,
+      pendingBets: 0,
+      wins: 0,
+      losses: 0,
+      winRate: 0,
+      yield: 0,
+      netProfitUnits: 0,
+      monthlyRoi: 0,
+      averageOdds: 0,
+      initialBankroll: 1000,
+    };
+  }
 }

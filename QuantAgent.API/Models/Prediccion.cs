@@ -48,4 +48,18 @@ public class Prediccion : BaseEntity
     /// Zero when not applicable.
     /// </summary>
     public decimal TotalGoals { get; set; }
+
+    /// <summary>
+    /// Recommended stake amount using fractional Kelly Criterion.
+    /// Zero means "no bet" — the edge is below the minimum threshold.
+    /// </summary>
+    public decimal StakeSugerido { get; set; }
+
+    /// <summary>
+    /// When true, the odds comparison detected a >10% implied-probability
+    /// discrepancy between primary and secondary sources. The dashboard
+    /// displays these predictions in yellow/red, and Telegram asks the
+    /// administrator to confirm before proceeding.
+    /// </summary>
+    public bool DataAnomaly { get; set; }
 }

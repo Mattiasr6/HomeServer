@@ -78,6 +78,13 @@ public class TelegramListenerService : BackgroundService
         Update update,
         CancellationToken cancellationToken)
     {
+        // Route callback queries from inline feedback buttons (Order #32)
+        if (update.Type == UpdateType.CallbackQuery && update.CallbackQuery is { } callback)
+        {
+            await HandleFeedbackCallbackAsync(botClient, callback, cancellationToken);
+            return;
+        }
+
         if (update.Type != UpdateType.Message || update.Message is not { } message)
             return;
 
@@ -137,7 +144,6 @@ public class TelegramListenerService : BackgroundService
 
 
 
-
         // Unknown command — log and ignore
         _logger.LogInformation("Unrecognized command from {From}: {Text}", from, text);
     }
@@ -173,7 +179,7 @@ public class TelegramListenerService : BackgroundService
             }
 
             // Not found in any league
-            var notFound = $"❌ No pude encontrar estadísticas para '<b>{teamName}</b>'.";
+            var notFound = $"\u274C No pude encontrar estad\u00EDsticas para '<b>{teamName}</b>'.";
             await botClient.SendMessage(
                 chatId: chatId,
                 text: notFound,
@@ -187,7 +193,7 @@ public class TelegramListenerService : BackgroundService
             {
                 await botClient.SendMessage(
                     chatId: chatId,
-                    text: "❌ Ocurrió un error al buscar estadísticas. Intenta de nuevo más tarde.",
+                    text: "\u274C Ocurri\u00F3 un error al buscar estad\u00EDsticas. Intenta de nuevo m\u00E1s tarde.",
                     cancellationToken: cancellationToken);
             }
             catch { /* best-effort */ }
@@ -213,13 +219,13 @@ public class TelegramListenerService : BackgroundService
 
             if (rules.Count == 0)
             {
-                var msg = $"✅ Memoria limpia. No hay reglas de autocrítica para '<b>{teamName}</b>'.";
+                var msg = $"\u2705 Memoria limpia. No hay reglas de autocr\u00EDtica para '<b>{teamName}</b>'.";
                 await botClient.SendMessage(chatId: chatId, text: msg, parseMode: ParseMode.Html, cancellationToken: cancellationToken);
                 return;
             }
 
             var sb = new StringBuilder();
-            sb.AppendLine($"<b>🧠 Memoria Cuantitativa: {teamName}</b>");
+            sb.AppendLine($"<b>\U0001F9E0 Memoria Cuantitativa: {teamName}</b>");
             for (int i = 0; i < rules.Count; i++)
             {
                 sb.AppendLine($"{i + 1}. [Peso: {rules[i].Peso}] {rules[i].Regla}");
@@ -232,7 +238,7 @@ public class TelegramListenerService : BackgroundService
             _logger.LogError(ex, "Error processing /reglas command for '{Team}'", teamName);
             try
             {
-                await botClient.SendMessage(chatId: chatId, text: "❌ Ocurrió un error al consultar la memoria.", cancellationToken: cancellationToken);
+                await botClient.SendMessage(chatId: chatId, text: "\u274C Ocurri\u00F3 un error al consultar la memoria.", cancellationToken: cancellationToken);
             }
             catch { /* best-effort */ }
         }
@@ -375,11 +381,99 @@ public class TelegramListenerService : BackgroundService
 
     private static string FormatStatsMessage(string teamName, TeamStatsDto stats)
     {
-        return $"<b>📊 Estadísticas de {teamName}</b>\n" +
-               $"🏆 Posición: {stats.Posicion} | Puntos: {stats.Puntos}\n" +
-               $"⚽ Goles: {stats.GolesFavor} GF / {stats.GolesContra} GC\n" +
-               $"📈 % Over 2.5: {stats.Over25}\n" +
-               $"🚩 Corners: {stats.CornersLocal:F1} (Local) | {stats.CornersVisitante:F1} (Visita)";
+        return $"<b>\U0001F4CA Estad\u00EDsticas de {teamName}</b>\n" +
+               $"\U0001F3C6 Posici\u00F3n: {stats.Posicion} | Puntos: {stats.Puntos}\n" +
+               $"\u26BD Goles: {stats.GolesFavor} GF / {stats.GolesContra} GC\n" +
+               $"\U0001F4C8 % Over 2.5: {stats.Over25}\n" +
+               $"\U0001F6A9 Corners: {stats.CornersLocal:F1} (Local) | {stats.CornersVisitante:F1} (Visita)";
+    }
+
+    /// <summary>
+    /// Handles inline keyboard callbacks from value-bet feedback buttons.
+    /// Callback data format: <c>vb_{prediccionId:N}_1</c> (hit) or <c>vb_{prediccionId:N}_0</c> (miss).
+    /// Updates the Prediccion.Estado in the database for manual backtesting.
+    /// </summary>
+    private async Task HandleFeedbackCallbackAsync(
+        ITelegramBotClient botClient,
+        CallbackQuery callback,
+        CancellationToken cancellationToken)
+    {
+        var data = callback.Data ?? string.Empty;
+        _logger.LogInformation("Feedback callback: {Data} from {User}",
+            data, callback.From?.Username ?? callback.From?.Id.ToString() ?? "unknown");
+
+        // Expected format: "vb_{guid:n}_1" or "vb_{guid:n}_0"
+        if (!data.StartsWith("vb_") || data.Length < 5)
+        {
+            await botClient.AnswerCallbackQuery(callback.Id,
+                text: "Enlace inv\u00E1lido.", cancellationToken: cancellationToken);
+            return;
+        }
+
+        // Parse: strip "vb_" prefix, split by last '_'
+        var underscoreIndex = data.LastIndexOf('_');
+        if (underscoreIndex < 4)
+        {
+            await botClient.AnswerCallbackQuery(callback.Id,
+                text: "Formato inv\u00E1lido.", cancellationToken: cancellationToken);
+            return;
+        }
+
+        var idStr = data[3..underscoreIndex];       // between "vb_" and last "_"
+        var resultFlag = data[(underscoreIndex + 1)..]; // "1" or "0"
+
+        if (!Guid.TryParseExact(idStr, "N", out var prediccionId))
+        {
+            await botClient.AnswerCallbackQuery(callback.Id,
+                text: "ID inv\u00E1lido.", cancellationToken: cancellationToken);
+            return;
+        }
+
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<QuantDbContext>();
+
+            var prediccion = await db.Predicciones.FindAsync(
+                new object[] { prediccionId }, cancellationToken);
+            if (prediccion is null)
+            {
+                await botClient.AnswerCallbackQuery(callback.Id,
+                    text: "Predicci\u00F3n no encontrada.", cancellationToken: cancellationToken);
+                return;
+            }
+
+            var acertada = resultFlag == "1";
+            prediccion.Estado = acertada
+                ? EstadoPrediccion.Ganada
+                : EstadoPrediccion.Perdida;
+            await db.SaveChangesAsync(cancellationToken);
+
+            var confirmText = acertada
+                ? "\u2705 \u00A1Gracias! Marcada como ACERTADA."
+                : "\u274C \u00A1Gracias! Marcada como FALLADA.";
+
+            await botClient.AnswerCallbackQuery(
+                callback.Id, text: confirmText,
+                cancellationToken: cancellationToken);
+
+            _logger.LogInformation(
+                "Feedback processed: Prediccion {Id} -> {Result} (user: {User})",
+                prediccionId,
+                acertada ? "ACERTADA" : "FALLADA",
+                callback.From?.Username ?? callback.From?.Id.ToString() ?? "unknown");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing feedback callback for data: {Data}", data);
+            try
+            {
+                await botClient.AnswerCallbackQuery(callback.Id,
+                    text: "Error al procesar. Intenta de nuevo.",
+                    cancellationToken: cancellationToken);
+            }
+            catch { /* best-effort */ }
+        }
     }
 
     private Task HandleErrorAsync(

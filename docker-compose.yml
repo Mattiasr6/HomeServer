@@ -20,13 +20,14 @@ services:
       interval: 10s
       retries: 5
       start_period: 30s
-
   # ── API (.NET 8) ──────────────────────────────────────────────────────────
   api:
     build:
       context: ./QuantAgent.API
       dockerfile: Dockerfile
     container_name: quant_api
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
@@ -34,10 +35,18 @@ services:
       ConnectionStrings__DefaultConnection: >
         Host=db;Port=5432;Database=quant_agent;Username=quant_user;Password=quant_password_super_segura
       ASPNETCORE_ENVIRONMENT: Production
-      Ollama__Endpoint: http://100.78.144.4:11434
-      ApiSportsKey: f1acc5d5397639eee54c0126b50e33d3
+      ASPNETCORE_URLS: http://0.0.0.0:8080
+      Ollama__Endpoint: http://host.docker.internal:11434
       TelegramBot__Token: 8574459385:AAH0ck5iv8-pzn6Kg7hVMf7OCsc1SRhdYXU
       TelegramBot__ChatIdAdministrador: "6264321731"
+      Bankroll__Total: "1000"
+      OddsApi__ApiKey: the-odds-api-key-aqui
+      OddsApi__SportMapping__1: soccer_spain_la_liga
+      OddsApi__SportMapping__39: soccer_england_premier
+      OddsApi__SportMapping__140: soccer_germany_bundesliga
+      OddsApi__SportMapping__10: soccer_italy_serie_a
+      OddsApi__SportMapping__13: soccer_france_ligue_one
+      OddsApi__SportMapping__2: soccer_spain_la_liga
     ports:
       - "5259:8080"
     restart: unless-stopped

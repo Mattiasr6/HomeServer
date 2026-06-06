@@ -16,17 +16,20 @@ namespace QuantAgent.API.Jobs;
 public class MatchIngestionJob
 {
     private readonly QuantDbContext _db;
-    private readonly FootballApiService _footballApi;
+    private readonly IDataAggregatorService _dataAggregator;
     private readonly IConfiguration _config;
     private readonly ILogger<MatchIngestionJob> _logger;
+    private readonly ITelemetryService _telemetry;
     public MatchIngestionJob(
-        QuantDbContext db, FootballApiService footballApi,
+        QuantDbContext db, IDataAggregatorService dataAggregator,
         IConfiguration config,
+        ITelemetryService telemetry,
         ILogger<MatchIngestionJob> logger)
     {
         _db = db;
-        _footballApi = footballApi;
+        _dataAggregator = dataAggregator;
         _config = config;
+        _telemetry = telemetry;
         _logger = logger;
     }
 
@@ -39,6 +42,7 @@ public class MatchIngestionJob
     {
         _logger.LogInformation("[Phase A] Starting daily match ingestion at {Time:o}", DateTime.UtcNow);
 
+        await _telemetry.BroadcastLogAsync("Iniciando ingesta diaria de partidos...", "INFO");
         var leagues = _config.GetSection("ActiveLeagues").Get<int[]>();
         if (leagues is null || leagues.Length == 0)
         {
@@ -46,20 +50,48 @@ public class MatchIngestionJob
             leagues = [1, 39, 140, 10, 13, 2];
         }
 
-        var fixtures = await _footballApi.GetDailyFixturesAsync(
-            DateTime.UtcNow, leagues);
+        // Idempotency pre-check: skip API call entirely if today's matches are already ingested
+        // Prevents unnecessary API-Football billing when the cron fires multiple times
+        var todayStart = DateTime.UtcNow.Date;
+        var alreadyIngested = await _db.Partidos
+            .AnyAsync(p => p.FechaInicio >= todayStart);
+
+        if (alreadyIngested)
+        {
+            _logger.LogInformation(
+                "[Phase A] Today's fixtures already ingested — skipping API call to avoid unnecessary billing.");
+            // Even if ingestion is skipped, still enqueue value-bet analysis for any pending matches
+            var pendingCount = await _db.Partidos
+                .CountAsync(p => p.Estado == EstadoPartido.Pendiente
+                    && !_db.Predicciones.Any(pr => pr.PartidoId == p.Id));
+            if (pendingCount > 0)
+            {
+                BackgroundJob.Enqueue<ValueBetDetectionJob>(
+                    x => x.AnalyzePendingMatchesAsync(CancellationToken.None));
+                _logger.LogInformation(
+                    "[Phase A] {PendingCount} pending matches — enqueued value-bet analysis.", pendingCount);
+            }
+            return;
+        }
+
+        var fixtures = await _dataAggregator.GetDailyFixturesAsync(
+            DateTime.UtcNow, leagues, CancellationToken.None);
 
         if (fixtures.Count == 0)
         {
             _logger.LogInformation("[Phase A] No fixtures found for today in target leagues.");
             return;
         }
+        await _telemetry.BroadcastLogAsync(string.Format(
+            "Obtenidos {0} partidos de API-Football para {1} ligas",
+            fixtures.Count, leagues.Length), "INFO");
 
         var createdCount = 0;
         var skippedCount = 0;
 
-        foreach (var dto in fixtures)
+        foreach (var aggregated in fixtures)
         {
+            var dto = aggregated.Fixture;
             // Idempotency: skip if already ingested
             var exists = await _db.Partidos.AnyAsync(p => p.FixtureId == dto.FixtureId);
             if (exists)
@@ -102,6 +134,9 @@ public class MatchIngestionJob
 
         _logger.LogInformation(
             "[Phase A] Enqueued value-bet analysis job {JobId}", analysisJobId);
+        await _telemetry.BroadcastLogAsync(string.Format(
+            "Ingesta completada: {0} creados, {1} omitidos, {2} total",
+            createdCount, skippedCount, fixtures.Count), "INFO");
     }
 
 }

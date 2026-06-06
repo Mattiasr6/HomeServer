@@ -21,6 +21,8 @@ public class QuantDbContext : DbContext
 
     public DbSet<ReglaAprendida> ReglasAprendidas => Set<ReglaAprendida>();
 
+    public DbSet<ApiKey> ApiKeys => Set<ApiKey>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -61,6 +63,7 @@ public class QuantDbContext : DbContext
             entity.Property(e => e.Mercado).HasColumnName("mercado").HasConversion<int>();
             entity.Property(e => e.CornersOverUnder).HasColumnName("corners_over_under").HasColumnType("numeric(5,1)");
             entity.Property(e => e.TotalGoals).HasColumnName("total_goals").HasColumnType("numeric(5,1)");
+            entity.Property(e => e.DataAnomaly).HasColumnName("data_anomaly").HasDefaultValue(false);
 
             entity.HasOne(e => e.Partido)
                   .WithMany()
@@ -94,6 +97,25 @@ public class QuantDbContext : DbContext
                   .OnDelete(DeleteBehavior.SetNull);
 
             entity.HasIndex(e => e.PrediccionId).HasDatabaseName("ix_reglas_aprendidas_prediccion_id");
+        });
+
+        // --- ApiKey ------------------------------------------------------------
+        modelBuilder.Entity<ApiKey>(entity =>
+        {
+            entity.ToTable("api_keys");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.Key).HasColumnName("key").IsRequired().HasMaxLength(500);
+            entity.Property(e => e.Deporte).HasColumnName("deporte").IsRequired().HasMaxLength(50);
+            entity.Property(e => e.Estado).HasColumnName("estado").HasConversion<int>();
+            entity.Property(e => e.UltimoUso).HasColumnName("ultimo_uso");
+            entity.Property(e => e.Exitos).HasColumnName("exitos");
+            entity.Property(e => e.Fallos).HasColumnName("fallos");
+            entity.Property(e => e.CreatedAt).HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+
+            entity.HasIndex(e => e.Deporte).HasDatabaseName("ix_api_keys_deporte");
+            entity.HasIndex(e => e.Estado).HasDatabaseName("ix_api_keys_estado");
         });
     }
 }

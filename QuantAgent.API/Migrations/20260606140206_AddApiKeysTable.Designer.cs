@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using QuantAgent.API.Data;
@@ -11,9 +12,11 @@ using QuantAgent.API.Data;
 namespace QuantAgent.API.Migrations
 {
     [DbContext(typeof(QuantDbContext))]
-    partial class QuantDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260606140206_AddApiKeysTable")]
+    partial class AddApiKeysTable
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -156,12 +159,6 @@ namespace QuantAgent.API.Migrations
                         .HasColumnType("numeric(10,3)")
                         .HasColumnName("cuota");
 
-                    b.Property<bool>("DataAnomaly")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false)
-                        .HasColumnName("data_anomaly");
-
                     b.Property<int>("Estado")
                         .HasColumnType("integer")
                         .HasColumnName("estado");
@@ -185,9 +182,6 @@ namespace QuantAgent.API.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)")
                         .HasColumnName("seleccion");
-
-                    b.Property<decimal>("StakeSugerido")
-                        .HasColumnType("numeric");
 
                     b.Property<decimal>("TotalGoals")
                         .HasColumnType("numeric(5,1)")

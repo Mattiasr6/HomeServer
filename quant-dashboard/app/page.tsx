@@ -1,11 +1,12 @@
-import { getKpis, getActivePredictions, getPredictionHistory } from "@/lib/api";
-import KpiGrid from "@/components/KpiGrid";
+import { getDashboardStats, getActivePredictions, getPredictionHistory } from "@/lib/api";
+import StatsGrid from "@/components/StatsGrid";
 import PredictionsTable from "@/components/PredictionsTable";
 import ControlPanel from "@/components/ControlPanel";
+import Terminal from "@/components/Terminal";
 
 export default async function DashboardPage() {
-  const [kpis, activePredictions, historyPredictions] = await Promise.all([
-    getKpis(),
+  const [stats, activePredictions, historyPredictions] = await Promise.all([
+    getDashboardStats(),
     getActivePredictions(),
     getPredictionHistory(),
   ]);
@@ -23,21 +24,24 @@ export default async function DashboardPage() {
           </p>
         </div>
         <span className="hidden rounded-md bg-slate-800 px-3 py-1 text-xs font-mono text-slate-400 sm:inline-block">
-          v0.1
+          v0.2
         </span>
       </header>
 
       {/* Control panel */}
       <ControlPanel />
 
-      {/* KPI cards */}
-      <KpiGrid data={kpis} />
+      {/* Dashboard stats (WinRate, Yield, ROI) */}
+      <StatsGrid data={stats} />
 
       {/* Predictions table with tabs */}
       <PredictionsTable
         activePredictions={activePredictions}
         historyPredictions={historyPredictions}
       />
+
+      {/* Live terminal (SignalR telemetry) */}
+      <Terminal />
     </div>
   );
 }

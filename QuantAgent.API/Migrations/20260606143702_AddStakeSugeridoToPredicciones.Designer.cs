@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using QuantAgent.API.Data;
@@ -11,9 +12,11 @@ using QuantAgent.API.Data;
 namespace QuantAgent.API.Migrations
 {
     [DbContext(typeof(QuantDbContext))]
-    partial class QuantDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260606143702_AddStakeSugeridoToPredicciones")]
+    partial class AddStakeSugeridoToPredicciones
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -155,12 +158,6 @@ namespace QuantAgent.API.Migrations
                     b.Property<decimal>("Cuota")
                         .HasColumnType("numeric(10,3)")
                         .HasColumnName("cuota");
-
-                    b.Property<bool>("DataAnomaly")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false)
-                        .HasColumnName("data_anomaly");
 
                     b.Property<int>("Estado")
                         .HasColumnType("integer")

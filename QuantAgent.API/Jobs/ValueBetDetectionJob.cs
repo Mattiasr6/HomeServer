@@ -101,13 +101,29 @@ internal class ValueBetDetectionJob
     private readonly ITelegramNotificationService _telegram;
     private readonly ISoccerStatsScraperService _scraper;
     private readonly ILogger<ValueBetDetectionJob> _logger;
+    private readonly IBankrollManagementService _bankroll;
+    private readonly IConfiguration _configuration;
+    private readonly ITelemetryService _telemetry;
 
+    private readonly ISentimentScraperService _sentimentScraper;
+    private readonly ISentimentAnalysisService _sentimentAnalysis;
+    private readonly ISafetyValveService _safetyValve;
+    private readonly IAlternativeOddsService _alternativeOdds;
+    private readonly OddsComparatorService _oddsComparator;
     public ValueBetDetectionJob(
         QuantDbContext db,
         FootballApiService footballApi,
         IOllamaInferenceService inference,
         ITelegramNotificationService telegram,
         ISoccerStatsScraperService scraper,
+        IBankrollManagementService bankroll,
+        IConfiguration configuration,
+        ITelemetryService telemetry,
+        ISentimentScraperService sentimentScraper,
+        ISentimentAnalysisService sentimentAnalysis,
+        ISafetyValveService safetyValve,
+        IAlternativeOddsService alternativeOdds,
+        OddsComparatorService oddsComparator,
         ILogger<ValueBetDetectionJob> logger)
     {
         _db = db;
@@ -115,6 +131,14 @@ internal class ValueBetDetectionJob
         _inference = inference;
         _telegram = telegram;
         _scraper = scraper;
+        _bankroll = bankroll;
+        _configuration = configuration;
+        _telemetry = telemetry;
+        _sentimentScraper = sentimentScraper;
+        _sentimentAnalysis = sentimentAnalysis;
+        _safetyValve = safetyValve;
+        _alternativeOdds = alternativeOdds;
+        _oddsComparator = oddsComparator;
         _logger = logger;
     }
 
@@ -138,6 +162,8 @@ internal class ValueBetDetectionJob
         }
 
         _logger.LogInformation("[Phase C] Analyzing {Count} pending match(es)", pending.Count);
+        await _telemetry.BroadcastLogAsync(string.Format(
+            "Analizando {0} partidos pendientes con IA...", pending.Count), "AI");
 
         var processed = 0;
         var alertsSent = 0;
@@ -214,6 +240,16 @@ internal class ValueBetDetectionJob
     private async Task<(bool Apostar, int Processed, int Alerts)> AnalyzeOneAsync(
         Partido partido, CancellationToken ct)
     {
+
+        // Order #38: safety valve — halt if daily loss exceeds 5% of bankroll
+        var safetyStatus = await _safetyValve.GetSystemStatusAsync(ct);
+        if (safetyStatus == SystemStatus.EMERGENCY_HALT)
+        {
+            _logger.LogWarning(
+                "[Phase C] EMERGENCY HALT — skipping {Local} vs {Visitante} (daily loss > 5% of bankroll)",
+                partido.EquipoLocal, partido.EquipoVisitante);
+            return (false, 0, 0);
+        }
         var reglas = await _db.ReglasAprendidas
             .AsNoTracking()
             .Where(r => r.Equipo == partido.EquipoLocal
@@ -229,14 +265,41 @@ internal class ValueBetDetectionJob
 
         var allOdds = await oddsTask;
 
-        // Run 3 market analyses in parallel
-        var ganadorTask = _inference.AnalyzeMarketAsync(
+        // Order #37: sentiment analysis — scrape headlines for both teams
+        // and score via Ollama. Failures degrade gracefully so they don't
+        // block the prediction pipeline.
+        var sentimentScores = new Dictionary<string, SentimentScoreDto>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var headlines = await _sentimentScraper.GetHeadlinesAsync(null, 10, ct);
+            var localTask = _sentimentAnalysis.ScoreTeamSentimentAsync(
+                partido.EquipoLocal, headlines, ct);
+            var visitanteTask = _sentimentAnalysis.ScoreTeamSentimentAsync(
+                partido.EquipoVisitante, headlines, ct);
+            var sentResults = await Task.WhenAll(localTask, visitanteTask);
+            sentimentScores[partido.EquipoLocal] = sentResults[0];
+            sentimentScores[partido.EquipoVisitante] = sentResults[1];
+            _logger.LogInformation(
+                "[Phase C] Sentiment for {Local} vs {Visitante}: local={L:F2} visitante={V:F2}",
+                partido.EquipoLocal, partido.EquipoVisitante,
+                sentResults[0].Score, sentResults[1].Score);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "[Phase C] Sentiment analysis failed for match {Id} — proceeding without penalization",
+                partido.Id);
+        }
+
+        // Sequential: Ganador first (highest liquidity), then secondary markets
+        var ganadorResult = await _inference.AnalyzeMarketAsync(
             partido, reglas, localStats, visitanteStats,
             TipoMercado.Ganador,
             allOdds.CuotaLocal, allOdds.CuotaEmpate, allOdds.CuotaVisita,
             allOdds.CornersOver, allOdds.CornersUnder,
             allOdds.GoalsOver, allOdds.GoalsUnder, ct);
 
+        // Then run Corners and Goles in parallel (2-way GPU load is acceptable)
         var cornersTask = _inference.AnalyzeMarketAsync(
             partido, reglas, localStats, visitanteStats,
             TipoMercado.Corners,
@@ -251,22 +314,60 @@ internal class ValueBetDetectionJob
             allOdds.CornersOver, allOdds.CornersUnder,
             allOdds.GoalsOver, allOdds.GoalsUnder, ct);
 
-        var results = await Task.WhenAll(ganadorTask, cornersTask, golesTask);
+        var secondaryResults = await Task.WhenAll(cornersTask, golesTask);
+
+        // Order #38: fetch alternative odds (TheOddsAPI) and detect >10% discrepancies
+        OddsComparisonReport? comparisonReport = null;
+        var highDiscrepancyOutcomes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var activeLeagues = _configuration.GetSection("ActiveLeagues").Get<int[]>() ?? [];
+            var altOddsTasks = activeLeagues
+                .Select(l => _alternativeOdds.GetMatchWinnerOddsAsync(
+                    partido.EquipoLocal, partido.EquipoVisitante, l, ct))
+                .ToArray();
+            var allResults = await Task.WhenAll(altOddsTasks);
+            var altOdds = allResults.FirstOrDefault(r => r.Count > 0) ?? [];
+
+            if (altOdds.Count > 0 && allOdds.CuotaLocal > 0)
+            {
+                comparisonReport = _oddsComparator.Compare(
+                    partido.EquipoLocal, partido.EquipoVisitante,
+                    allOdds.CuotaLocal, allOdds.CuotaEmpate, allOdds.CuotaVisita,
+                    altOdds);
+
+                foreach (var sig in comparisonReport.Signals)
+                {
+                    if (sig.ImpliedProbDiff > 0.10)
+                    {
+                        highDiscrepancyOutcomes.Add(sig.Outcome);
+                    }
+                }
+
+                if (highDiscrepancyOutcomes.Count > 0)
+                {
+                    _logger.LogWarning(
+                        "[Phase C] High discrepancy outcomes for {Local} vs {Visitante}: {Outcomes}",
+                        partido.EquipoLocal, partido.EquipoVisitante,
+                        string.Join(", ", highDiscrepancyOutcomes));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "[Phase C] Alternative odds/comparator failed for match {Id} — proceeding without check",
+                partido.Id);
+        }
+        var results = new[] { ganadorResult }.Concat(secondaryResults).ToArray();
 
         var predicciones = new List<Prediccion>(3);
         var apostarCount = 0;
 
         foreach (var result in results)
         {
-            var mercado = result.Decision switch
-            {
-                // The model returns Mercado in the JSON, but since we
-                // called per-market, we know which it is from context.
-                // Fallback: parse from the response or use market index.
-                _ when string.Equals(result.Decision, ApostarDecision,
-                    StringComparison.OrdinalIgnoreCase) => true,
-                _ => false
-            };
+            var isApostar = string.Equals(result.Decision, ApostarDecision,
+                StringComparison.OrdinalIgnoreCase);
 
             // Determine the odds value to store
             var cuota = GetCuotaForResult(result, allOdds, partido);
@@ -286,7 +387,40 @@ internal class ValueBetDetectionJob
                 Estado = EstadoPrediccion.Pendiente,
             };
 
+            // Order #35: calculate fractional Kelly stake for this prediction
+            var bankroll = _configuration.GetValue<decimal>("Bankroll:Total", 1000m);
+            prediccion.StakeSugerido = _bankroll.CalculateStake(
+                bankroll, prediccion.Confianza, prediccion.Cuota);
+
+            // Order #37: sentiment penalization — negative sentiment for the
+            // selected team reduces the stake proportionally.
+            if (sentimentScores.Count > 0)
+            {
+                var selectedTeam = GetTeamFromSelection(result.Seleccion, partido);
+                if (selectedTeam != null
+                    && sentimentScores.TryGetValue(selectedTeam, out var sent)
+                    && sent.Score < 0)
+                {
+                    var original = prediccion.StakeSugerido;
+                    var penalty = (decimal)(1.0 + sent.Score); // -0.3 → 0.7
+                    prediccion.StakeSugerido = Math.Round(original * penalty, 2);
+                    _logger.LogInformation(
+                        "[Phase C] Sentiment penalty for '{Team}': score={Score} → stake {Orig:N2} → {Adj:N2}",
+                        selectedTeam, sent.Score, original, prediccion.StakeSugerido);
+                }
+            }
+
+            // Order #38: flag data anomaly if the selected outcome has >10% discrepancy
+            if (highDiscrepancyOutcomes.Contains(result.Seleccion))
+            {
+                prediccion.DataAnomaly = true;
+                _logger.LogInformation(
+                    "[Phase C] DataAnomaly=true for '{Sel}' — >10% implied-probability gap",
+                    result.Seleccion);
+            }
+
             predicciones.Add(prediccion);
+            if (isApostar) apostarCount++;
         }
 
         _db.Predicciones.AddRange(predicciones);
@@ -295,40 +429,51 @@ internal class ValueBetDetectionJob
         // Log summary
         foreach (var p in predicciones)
         {
-            var isApostar = string.Equals(
-                p.Seleccion, "Over", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(p.Seleccion, "APOSTAR", StringComparison.OrdinalIgnoreCase)
-                // Fallback: if the model said APOSTAR in Decision field,
-                // we already evaluated above
-                ;
-
             _logger.LogInformation(
                 "[Phase C] {Local} vs {Visitante} [{Mercado}] -> {Seleccion} ({Confianza}%)",
                 partido.EquipoLocal, partido.EquipoVisitante,
                 p.Mercado, p.Seleccion, p.Confianza);
         }
 
-        // Telegram alerts per market with APOSTAR decisions
-        var alertMessages = predicciones
-            .Where(p => string.Equals(p.Seleccion, "Over", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(p.Seleccion, "APOSTAR", StringComparison.OrdinalIgnoreCase)
-                || p.Confianza >= 70) // High confidence = always alert
-            .Select(p => {
-                apostarCount++;
-                return
-                    "[ALERTA] VALUE BET DETECTADA\n" +
-                    $"{partido.EquipoLocal} vs {partido.EquipoVisitante}\n" +
-                    $"Mercado: {p.Mercado}\n" +
-                    $"Seleccion: {p.Seleccion}\n" +
-                    $"Confianza: {p.Confianza}%\n" +
-                    $"Cuota: {p.Cuota:N2}\n" +
-                    $"Razonamiento: {p.Razonamiento}";
-            })
+        // Value bet filtering: only alert when confidence >= 80 AND odds > 1.80
+        var valueBets = predicciones
+            .Where(p => p.Confianza >= 80 && p.Cuota > 1.80m)
             .ToList();
 
-        foreach (var msg in alertMessages)
+        foreach (var vb in valueBets)
         {
-            await _telegram.SendAlertAsync(msg, ct);
+            await _telegram.SendValueBetAlertAsync(vb, partido, ct);
+            await _telemetry.BroadcastLogAsync(string.Format(
+                "Valuebet: {0} vs {1} | {2} conf={3}% cuota={4:N2} stake={5:N2}",
+                partido.EquipoLocal, partido.EquipoVisitante,
+                vb.Seleccion, vb.Confianza, vb.Cuota, vb.StakeSugerido), "AI");
+        }
+
+        // Order #38: discrepancy alerts for predictions with >10% odds gap
+        foreach (var p in predicciones.Where(p => p.DataAnomaly && p.StakeSugerido > 0m))
+        {
+            try
+            {
+                var maxSig = comparisonReport?.Signals
+                    .Where(s => s.Outcome.Equals(p.Seleccion, StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(s => s.ImpliedProbDiff)
+                    .FirstOrDefault();
+                if (maxSig != null)
+                {
+                    await _telegram.SendDiscrepancyAlertAsync(
+                        p, partido, maxSig.ImpliedProbDiff * 100, ct);
+                    await _telemetry.BroadcastLogAsync(string.Format(
+                        "Discrepancia: {0} vs {1} | {2} diff={3:P1}",
+                        partido.EquipoLocal, partido.EquipoVisitante,
+                        p.Seleccion, maxSig.ImpliedProbDiff), "AI");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "[Phase C] Failed to send discrepancy alert for {Local} vs {Visitante}",
+                    partido.EquipoLocal, partido.EquipoVisitante);
+            }
         }
 
         var hasApostar = apostarCount > 0;
@@ -436,5 +581,19 @@ internal class ValueBetDetectionJob
                 teamName, league);
             return null;
         }
+    }
+
+    /// <summary>
+    /// Resolves a prediction selection (team name, Empate, Over/Under) back
+    /// to one of the two match teams, or null if the selection is not a team.
+    /// Used by the sentiment penalization layer in Order #37.
+    /// </summary>
+    private static string? GetTeamFromSelection(string selection, Partido partido)
+    {
+        if (selection.Equals(partido.EquipoLocal, StringComparison.OrdinalIgnoreCase))
+            return partido.EquipoLocal;
+        if (selection.Equals(partido.EquipoVisitante, StringComparison.OrdinalIgnoreCase))
+            return partido.EquipoVisitante;
+        return null; // Empate or Over/Under → no team sentiment
     }
 }
