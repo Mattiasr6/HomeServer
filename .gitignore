@@ -1,0 +1,49 @@
+# ───── .NET ─────────────────────────────────────────────────────────────────
+bin/
+obj/
+appsettings.Development.json
+*.user
+*.suo
+*.DotSettings
+
+# ───── Node.js / Next.js ────────────────────────────────────────────────────
+node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+next-env.d.ts
+
+# ───── Environment variables ────────────────────────────────────────────────
+.env
+.env.local
+.env.*
+!.env.example
+
+# ───── Docker volumes ───────────────────────────────────────────────────────
+pgdata/
+docker-volumes/
+
+# ───── IDE ──────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ───── OS ───────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ───── Logs ─────────────────────────────────────────────────────────────────
+*.log
+
+# ───── CI/CD / Platform ─────────────────────────────────────────────────────
+.vercel
+.cloudflare
+
+# ───── OpenCode agent workspace ─────────────────────────────────────────────
+.omo/
+
+# ───── Coolify deployment guide (user-filled secrets placeholder) ──────────
+# COOLIFY_DEPLOY_GUIDE.md is kept tracked — it contains no secrets,
+# only placeholders like {{TAILSCALE_IP}} and {{DB_PASSWORD}}.

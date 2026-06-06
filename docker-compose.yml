@@ -1,0 +1,66 @@
+# ───── Quant Agent — Producción ──────────────────────────────────────────────
+# Uso: docker compose up -d
+#
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+  # ── Base de datos ──────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: quant_db
+    environment:
+      POSTGRES_USER: quant_user
+      POSTGRES_PASSWORD: quant_password_super_segura
+      POSTGRES_DB: quant_agent
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quant_user -d quant_agent"]
+      interval: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── API (.NET 8) ──────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ./QuantAgent.API
+      dockerfile: Dockerfile
+    container_name: quant_api
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ConnectionStrings__DefaultConnection: >
+        Host=db;Port=5432;Database=quant_agent;Username=quant_user;Password=quant_password_super_segura
+      ASPNETCORE_ENVIRONMENT: Production
+      Ollama__Endpoint: http://100.78.144.4:11434
+      ApiSportsKey: f1acc5d5397639eee54c0126b50e33d3
+      TelegramBot__Token: 8574459385:AAH0ck5iv8-pzn6Kg7hVMf7OCsc1SRhdYXU
+      TelegramBot__ChatIdAdministrador: "6264321731"
+    ports:
+      - "5259:8080"
+    restart: unless-stopped
+
+  # ── Frontend (Next.js 16) ─────────────────────────────────────────────────
+  web:
+    build:
+      context: ./quant-dashboard
+      dockerfile: Dockerfile
+      args:
+        # NEXT_PUBLIC_* vars are inlined at build time by Next.js
+        NEXT_PUBLIC_API_URL: http://100.78.144.4:5259/api
+    container_name: quant_web
+    depends_on:
+      - api
+    environment:
+      # Internal Docker network — used by SSR functions (getKpis, etc.)
+      API_URL: http://api:8080/api
+    ports:
+      - "100.78.144.4:4000:3000"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
