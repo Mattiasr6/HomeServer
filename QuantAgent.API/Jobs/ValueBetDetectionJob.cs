@@ -222,56 +222,184 @@ internal class ValueBetDetectionJob
 
         var (localStats, visitanteStats) = await FetchTeamStatsAsync(partido, ct);
 
-        var (cuotaLocal, cuotaEmpate, cuotaVisita) = partido.FixtureId.HasValue
-            ? await _footballApi.GetMatchOddsAsync(partido.FixtureId.Value)
-            : (0m, 0m, 0m);
+        // Fetch all odds in parallel
+        var oddsTask = partido.FixtureId.HasValue
+            ? FetchAllOddsAsync(partido.FixtureId.Value)
+            : Task.FromResult(new AllOddsDto());
 
-        var result = await _inference.AnalyzeMatchAsync(
+        var allOdds = await oddsTask;
+
+        // Run 3 market analyses in parallel
+        var ganadorTask = _inference.AnalyzeMarketAsync(
             partido, reglas, localStats, visitanteStats,
-            cuotaLocal, cuotaEmpate, cuotaVisita, ct);
+            TipoMercado.Ganador,
+            allOdds.CuotaLocal, allOdds.CuotaEmpate, allOdds.CuotaVisita,
+            allOdds.CornersOver, allOdds.CornersUnder,
+            allOdds.GoalsOver, allOdds.GoalsUnder, ct);
 
-        var cuotaSeleccion = result.Seleccion switch
+        var cornersTask = _inference.AnalyzeMarketAsync(
+            partido, reglas, localStats, visitanteStats,
+            TipoMercado.Corners,
+            allOdds.CuotaLocal, allOdds.CuotaEmpate, allOdds.CuotaVisita,
+            allOdds.CornersOver, allOdds.CornersUnder,
+            allOdds.GoalsOver, allOdds.GoalsUnder, ct);
+
+        var golesTask = _inference.AnalyzeMarketAsync(
+            partido, reglas, localStats, visitanteStats,
+            TipoMercado.Goles,
+            allOdds.CuotaLocal, allOdds.CuotaEmpate, allOdds.CuotaVisita,
+            allOdds.CornersOver, allOdds.CornersUnder,
+            allOdds.GoalsOver, allOdds.GoalsUnder, ct);
+
+        var results = await Task.WhenAll(ganadorTask, cornersTask, golesTask);
+
+        var predicciones = new List<Prediccion>(3);
+        var apostarCount = 0;
+
+        foreach (var result in results)
         {
-            string s when s.Equals(partido.EquipoLocal, StringComparison.OrdinalIgnoreCase) => cuotaLocal,
-            string s when s.Equals(partido.EquipoVisitante, StringComparison.OrdinalIgnoreCase) => cuotaVisita,
-            _ => cuotaEmpate,
-        };
+            var mercado = result.Decision switch
+            {
+                // The model returns Mercado in the JSON, but since we
+                // called per-market, we know which it is from context.
+                // Fallback: parse from the response or use market index.
+                _ when string.Equals(result.Decision, ApostarDecision,
+                    StringComparison.OrdinalIgnoreCase) => true,
+                _ => false
+            };
 
-        var prediccion = new Prediccion
-        {
-            PartidoId = partido.Id,
-            Seleccion = result.Seleccion,
-            Cuota = cuotaSeleccion,
-            Confianza = result.Confianza,
-            Razonamiento = result.Razonamiento.Length > RazonamientoMaxLength
-                ? result.Razonamiento[..RazonamientoMaxLength]
-                : result.Razonamiento,
-            Estado = EstadoPrediccion.Pendiente,
-        };
+            // Determine the odds value to store
+            var cuota = GetCuotaForResult(result, allOdds, partido);
 
-        _db.Predicciones.Add(prediccion);
-        await _db.SaveChangesAsync(ct);
+            var prediccion = new Prediccion
+            {
+                PartidoId = partido.Id,
+                Mercado = MapMercado(result),
+                Seleccion = result.Seleccion,
+                Cuota = cuota,
+                Confianza = result.Confianza,
+                CornersOverUnder = result.CornersOverUnder,
+                TotalGoals = result.TotalGoals,
+                Razonamiento = result.Razonamiento.Length > RazonamientoMaxLength
+                    ? result.Razonamiento[..RazonamientoMaxLength]
+                    : result.Razonamiento,
+                Estado = EstadoPrediccion.Pendiente,
+            };
 
-        _logger.LogInformation(
-            "[Phase C] {Local} vs {Visitante} -> {Decision} ({Confianza}%) [stats: local={LocalFlag}, visitante={VisitanteFlag}]",
-            partido.EquipoLocal, partido.EquipoVisitante,
-            result.Decision, result.Confianza,
-            localStats != null ? "OK" : "N/A",
-            visitanteStats != null ? "OK" : "N/A");
-
-        var apostar = string.Equals(result.Decision, ApostarDecision, StringComparison.OrdinalIgnoreCase);
-        if (apostar)
-        {
-            var message =
-                "[ALERTA] VALUE BET DETECTADA\n" +
-                $"{partido.EquipoLocal} vs {partido.EquipoVisitante}\n" +
-                $"Seleccion: {result.Seleccion}\n" +
-                $"Confianza: {result.Confianza}%\n" +
-                $"Razonamiento: {result.Razonamiento}";
-            await _telegram.SendAlertAsync(message, ct);
+            predicciones.Add(prediccion);
         }
 
-        return (apostar, 1, apostar ? 1 : 0);
+        _db.Predicciones.AddRange(predicciones);
+        await _db.SaveChangesAsync(ct);
+
+        // Log summary
+        foreach (var p in predicciones)
+        {
+            var isApostar = string.Equals(
+                p.Seleccion, "Over", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(p.Seleccion, "APOSTAR", StringComparison.OrdinalIgnoreCase)
+                // Fallback: if the model said APOSTAR in Decision field,
+                // we already evaluated above
+                ;
+
+            _logger.LogInformation(
+                "[Phase C] {Local} vs {Visitante} [{Mercado}] -> {Seleccion} ({Confianza}%)",
+                partido.EquipoLocal, partido.EquipoVisitante,
+                p.Mercado, p.Seleccion, p.Confianza);
+        }
+
+        // Telegram alerts per market with APOSTAR decisions
+        var alertMessages = predicciones
+            .Where(p => string.Equals(p.Seleccion, "Over", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(p.Seleccion, "APOSTAR", StringComparison.OrdinalIgnoreCase)
+                || p.Confianza >= 70) // High confidence = always alert
+            .Select(p => {
+                apostarCount++;
+                return
+                    "[ALERTA] VALUE BET DETECTADA\n" +
+                    $"{partido.EquipoLocal} vs {partido.EquipoVisitante}\n" +
+                    $"Mercado: {p.Mercado}\n" +
+                    $"Seleccion: {p.Seleccion}\n" +
+                    $"Confianza: {p.Confianza}%\n" +
+                    $"Cuota: {p.Cuota:N2}\n" +
+                    $"Razonamiento: {p.Razonamiento}";
+            })
+            .ToList();
+
+        foreach (var msg in alertMessages)
+        {
+            await _telegram.SendAlertAsync(msg, ct);
+        }
+
+        var hasApostar = apostarCount > 0;
+        _logger.LogInformation(
+            "[Phase C] Done for {Local} vs {Visitante}: {Preds} predictions, {Apostar} value bets",
+            partido.EquipoLocal, partido.EquipoVisitante,
+            predicciones.Count, apostarCount);
+
+        return (hasApostar, predicciones.Count, apostarCount);
+    }
+
+    private static TipoMercado MapMercado(PrediccionResult result)
+    {
+        if (result.CornersOverUnder > 0) return TipoMercado.Corners;
+        if (result.TotalGoals > 0) return TipoMercado.Goles;
+        return TipoMercado.Ganador;
+    }
+
+    private static decimal GetCuotaForResult(
+        PrediccionResult result, AllOddsDto odds, Partido partido)
+    {
+        if (result.CornersOverUnder > 0)
+        {
+            // Corners market
+            return string.Equals(result.Seleccion, "Over",
+                StringComparison.OrdinalIgnoreCase)
+                ? odds.CornersOver : odds.CornersUnder;
+        }
+        if (result.TotalGoals > 0)
+        {
+            // Goles market
+            return string.Equals(result.Seleccion, "Over",
+                StringComparison.OrdinalIgnoreCase)
+                ? odds.GoalsOver : odds.GoalsUnder;
+        }
+        // Ganador market — map selection to odds
+        return result.Seleccion switch
+        {
+            string s when s.Equals(partido.EquipoLocal, StringComparison.OrdinalIgnoreCase) => odds.CuotaLocal,
+            string s when s.Equals(partido.EquipoVisitante, StringComparison.OrdinalIgnoreCase) => odds.CuotaVisita,
+            _ => odds.CuotaEmpate,
+        };
+    }
+
+    private record AllOddsDto
+    {
+        public decimal CuotaLocal { get; init; }
+        public decimal CuotaEmpate { get; init; }
+        public decimal CuotaVisita { get; init; }
+        public decimal CornersOver { get; init; }
+        public decimal CornersUnder { get; init; }
+        public decimal GoalsOver { get; init; }
+        public decimal GoalsUnder { get; init; }
+    }
+
+    private async Task<AllOddsDto> FetchAllOddsAsync(int fixtureId)
+    {
+        var (cuotaLocal, cuotaEmpate, cuotaVisita) = await _footballApi.GetMatchOddsAsync(fixtureId);
+        var (cornersOver, cornersUnder) = await _footballApi.GetCornersOddsAsync(fixtureId);
+        var (goalsOver, goalsUnder) = await _footballApi.GetGoalsOddsAsync(fixtureId);
+
+        return new AllOddsDto
+        {
+            CuotaLocal = cuotaLocal,
+            CuotaEmpate = cuotaEmpate,
+            CuotaVisita = cuotaVisita,
+            CornersOver = cornersOver,
+            CornersUnder = cornersUnder,
+            GoalsOver = goalsOver,
+            GoalsUnder = goalsUnder,
+        };
     }
 
     /// <summary>

@@ -31,4 +31,21 @@ public class Prediccion : BaseEntity
     public string Razonamiento { get; set; } = string.Empty;
 
     public EstadoPrediccion Estado { get; set; } = EstadoPrediccion.Pendiente;
+
+    /// <summary>
+    /// The market type this prediction targets (Ganador, Corners, Goles).
+    /// </summary>
+    public TipoMercado Mercado { get; set; } = TipoMercado.Ganador;
+
+    /// <summary>
+    /// For Corners market: the Over/Under threshold (e.g. 9.5 means "Over 9.5").
+    /// Zero when not applicable.
+    /// </summary>
+    public decimal CornersOverUnder { get; set; }
+
+    /// <summary>
+    /// For Goles market: the Over/Under threshold (e.g. 2.5 means "Over 2.5").
+    /// Zero when not applicable.
+    /// </summary>
+    public decimal TotalGoals { get; set; }
 }

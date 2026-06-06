@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using QuantAgent.API.Models;
+using QuantAgent.API.Models.Enums;
 using QuantAgent.API.Services.Scraping;
 
 namespace QuantAgent.API.Services.Inference;
@@ -42,7 +43,33 @@ internal class OllamaInferenceService : IOllamaInferenceService
         decimal cuotaVisita,
         CancellationToken cancellationToken = default)
     {
-        var prompt = BuildPrompt(partido, reglasEquipo, localStats, visitanteStats, cuotaLocal, cuotaEmpate, cuotaVisita);
+        // Default market prompt — Match Winner (keeps backward compat)
+        return await AnalyzeMarketAsync(
+            partido, reglasEquipo, localStats, visitanteStats,
+            TipoMercado.Ganador,
+            cuotaLocal, cuotaEmpate, cuotaVisita,
+            0m, 0m, 0m, 0m,
+            cancellationToken);
+    }
+
+    public async Task<PrediccionResult> AnalyzeMarketAsync(
+        Partido partido,
+        List<ReglaAprendida> reglasEquipo,
+        TeamStatsDto? localStats,
+        TeamStatsDto? visitanteStats,
+        TipoMercado mercado,
+        decimal cuotaLocal,
+        decimal cuotaEmpate,
+        decimal cuotaVisita,
+        decimal cornersOverOdds,
+        decimal cornersUnderOdds,
+        decimal goalsOverOdds,
+        decimal goalsUnderOdds,
+        CancellationToken cancellationToken = default)
+    {
+        var prompt = BuildPrompt(partido, reglasEquipo, localStats, visitanteStats,
+            mercado, cuotaLocal, cuotaEmpate, cuotaVisita,
+            cornersOverOdds, cornersUnderOdds, goalsOverOdds, goalsUnderOdds);
         var request = new OllamaGenerateRequest(ModelName, prompt, false, "json");
 
         using var httpResponse = await _ollama.HttpClient
@@ -68,8 +95,8 @@ internal class OllamaInferenceService : IOllamaInferenceService
                 "Ollama 'response' field could not be deserialized to PrediccionResult.");
 
         _logger.LogInformation(
-            "Ollama inference for {Local} vs {Visitante}: {Decision} ({Confianza}%)",
-            partido.EquipoLocal, partido.EquipoVisitante, result.Decision, result.Confianza);
+            "Ollama inference for {Local} vs {Visitante} [{Mercado}]: {Decision} ({Confianza}%)",
+            partido.EquipoLocal, partido.EquipoVisitante, mercado, result.Decision, result.Confianza);
 
         return result;
     }
@@ -113,14 +140,19 @@ internal class OllamaInferenceService : IOllamaInferenceService
         IReadOnlyList<ReglaAprendida> reglasEquipo,
         TeamStatsDto? localStats,
         TeamStatsDto? visitanteStats,
+        TipoMercado mercado,
         decimal cuotaLocal,
         decimal cuotaEmpate,
-        decimal cuotaVisita)
+        decimal cuotaVisita,
+        decimal cornersOverOdds,
+        decimal cornersUnderOdds,
+        decimal goalsOverOdds,
+        decimal goalsUnderOdds)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("Eres un Analista Cuantitativo de Fútbol.");
+        sb.AppendLine("Eres un Analista Cuantitativo de Fútbol especializado en mercados secundarios.");
         sb.AppendLine();
-        sb.AppendLine("Analiza el siguiente partido y emite una predicción cuantitativa en formato JSON ESTRICTO.");
+        sb.AppendLine("Analiza el siguiente partido y emite UNA predicción cuantitativa en formato JSON ESTRICTO.");
         sb.AppendLine("NO escribas texto fuera del JSON. NO uses bloques de código markdown.");
         sb.AppendLine();
         sb.AppendLine("== DATOS DEL PARTIDO ==");
@@ -147,33 +179,85 @@ internal class OllamaInferenceService : IOllamaInferenceService
             }
         }
         sb.AppendLine();
-        sb.AppendLine("== MERCADO DE APUESTAS (BET365) ==");
-        if (cuotaLocal > 0m && cuotaEmpate > 0m && cuotaVisita > 0m)
+
+        var marketLabel = mercado switch
         {
-            sb.AppendLine($"  - Cuota Local ({partido.EquipoLocal}): {cuotaLocal:N2}");
-            sb.AppendLine($"  - Cuota Empate: {cuotaEmpate:N2}");
-            sb.AppendLine($"  - Cuota Visitante ({partido.EquipoVisitante}): {cuotaVisita:N2}");
-            sb.AppendLine();
-            sb.AppendLine("El mercado financiero (casas de apuestas) valora este partido con las cuotas de arriba.");
-            sb.AppendLine("Compara la probabilidad implícita de estas cuotas (1 / cuota) con tus propios");
-            sb.AppendLine("cálculos basados en las estadísticas y reglas aprendidas.");
-            sb.AppendLine("Si tu confianza supera la probabilidad implícita de la casa de apuestas, HAY VALUE BET.");
-        }
-        else
+            TipoMercado.Corners => "CÓRNERS",
+            TipoMercado.Goles => "GOLES",
+            _ => "GANADOR"
+        };
+        sb.AppendLine($"== MERCADO OBJETIVO: {marketLabel} ==");
+
+        switch (mercado)
         {
-            sb.AppendLine("  - (cuotas de mercado no disponibles aún)");
+            case TipoMercado.Ganador:
+                sb.AppendLine("Analiza qué equipo ganará el partido.");
+                sb.AppendLine("Considera estadísticas ofensivas/defensivas, reglas aprendidas y tendencias.");
+                if (cuotaLocal > 0m && cuotaEmpate > 0m && cuotaVisita > 0m)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("== CUOTAS BET365 ==");
+                    sb.AppendLine($"  - Local ({partido.EquipoLocal}): {cuotaLocal:N2}");
+                    sb.AppendLine($"  - Empate: {cuotaEmpate:N2}");
+                    sb.AppendLine($"  - Visitante ({partido.EquipoVisitante}): {cuotaVisita:N2}");
+                    sb.AppendLine();
+                    sb.AppendLine("Compara la probabilidad implícita (1/cuota) con tus cálculos.");
+                    sb.AppendLine("Si tu confianza supera la probabilidad implícita, HAY VALUE BET.");
+                }
+                break;
+
+            case TipoMercado.Corners:
+                sb.AppendLine("Analiza el total de córners del partido, no el ganador.");
+                sb.AppendLine("Considera el promedio de córners generados/recibidos por cada equipo.");
+                sb.AppendLine("Umbral de análisis: 9.5 córners totales.");
+                if (cornersOverOdds > 0m && cornersUnderOdds > 0m)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("== CUOTAS BET365 (CÓRNERS O/U 9.5) ==");
+                    sb.AppendLine($"  - Over 9.5: {cornersOverOdds:N2}");
+                    sb.AppendLine($"  - Under 9.5: {cornersUnderOdds:N2}");
+                    sb.AppendLine();
+                    var overImplied = 1m / cornersOverOdds;
+                    var underImplied = 1m / cornersUnderOdds;
+                    sb.AppendLine($"Probabilidad implícita: Over={overImplied:P1} Under={underImplied:P1}");
+                }
+                break;
+
+            case TipoMercado.Goles:
+                sb.AppendLine("Analiza el total de goles del partido, no el ganador.");
+                sb.AppendLine("Considera el historial ofensivo/defensivo y el % Over 2.5 de cada equipo.");
+                sb.AppendLine("Umbral de análisis: 2.5 goles totales.");
+                if (goalsOverOdds > 0m && goalsUnderOdds > 0m)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("== CUOTAS BET365 (GOLES O/U 2.5) ==");
+                    sb.AppendLine($"  - Over 2.5: {goalsOverOdds:N2}");
+                    sb.AppendLine($"  - Under 2.5: {goalsUnderOdds:N2}");
+                    sb.AppendLine();
+                    var overImplied = 1m / goalsOverOdds;
+                    var underImplied = 1m / goalsUnderOdds;
+                    sb.AppendLine($"Probabilidad implícita: Over={overImplied:P1} Under={underImplied:P1}");
+                }
+                break;
         }
+
         sb.AppendLine();
 
-        // Note: literal '{' / '}' braces are placed in non-interpolated string
-        // segments so the C# string interpolation does not trip on them.
-        sb.Append("== FORMATO DE SALIDA REQUERIDO (JSON ESTRICTO) ==\n" +
-                  "{\n" +
-                  "  \"decision\": \"<APOSTAR o IGNORAR>\",\n" +
-                  "  \"seleccion\": \"<EXACTAMENTE el nombre del equipo local, el visitante, o 'Empate'>\",\n" +
-                  "  \"confianza\": <entero entre 0 y 100>,\n" +
-                  "  \"razonamiento\": \"<texto breve justificando la decisión>\"\n" +
-                  "}");
+        var expectedSelection = mercado switch
+        {
+            TipoMercado.Ganador => "\"Local\", \"Visitante\", o \"Empate\"",
+            TipoMercado.Corners => "\"Over 9.5\" o \"Under 9.5\"",
+            TipoMercado.Goles => "\"Over 2.5\" o \"Under 2.5\"",
+            _ => "\"Local\", \"Visitante\", o \"Empate\""
+        };
+
+        sb.AppendLine("== FORMATO DE SALIDA REQUERIDO (JSON ESTRICTO) ==");
+        sb.AppendLine("{");
+        sb.AppendLine("  \"decision\": \"<APOSTAR o IGNORAR>\",");
+        sb.AppendLine($"  \"seleccion\": \"<EXACTAMENTE {expectedSelection}>\",");
+        sb.AppendLine("  \"confianza\": <entero entre 0 y 100>,");
+        sb.AppendLine("  \"razonamiento\": \"<texto breve justificando la decisión>\"");
+        sb.AppendLine("}");
 
         return sb.ToString();
     }

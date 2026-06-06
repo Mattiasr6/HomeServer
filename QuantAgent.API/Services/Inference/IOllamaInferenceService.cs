@@ -1,4 +1,5 @@
 using QuantAgent.API.Models;
+using QuantAgent.API.Models.Enums;
 using QuantAgent.API.Services.Scraping;
 
 namespace QuantAgent.API.Services.Inference;
@@ -18,6 +19,7 @@ public interface IOllamaInferenceService
     /// involved teams, live statistics (when available), and market
     /// odds from Bet365. Returns a deterministic decision, confidence
     /// score (0-100) and rationale.
+    /// Default market: Ganador (Match Winner).
     /// </summary>
     Task<PrediccionResult> AnalyzeMatchAsync(
         Partido partido,
@@ -27,6 +29,26 @@ public interface IOllamaInferenceService
         decimal cuotaLocal,
         decimal cuotaEmpate,
         decimal cuotaVisita,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Analyze <paramref name="partido"/> for a SPECIFIC market type
+    /// (Ganador, Corners, or Goles) with the corresponding odds.
+    /// Returns the same <see cref="PrediccionResult"/> shape.
+    /// </summary>
+    Task<PrediccionResult> AnalyzeMarketAsync(
+        Partido partido,
+        List<ReglaAprendida> reglasEquipo,
+        TeamStatsDto? localStats,
+        TeamStatsDto? visitanteStats,
+        TipoMercado mercado,
+        decimal cuotaLocal,
+        decimal cuotaEmpate,
+        decimal cuotaVisita,
+        decimal cornersOverOdds,
+        decimal cornersUnderOdds,
+        decimal goalsOverOdds,
+        decimal goalsUnderOdds,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -47,7 +69,7 @@ public interface IOllamaInferenceService
 /// Kept <c>internal</c> because it is a low-level inference artifact;
 /// controllers should map it to a public DTO when exposing it.
 /// </summary>
-public record PrediccionResult(string Decision, string Seleccion, int Confianza, string Razonamiento);
+public record PrediccionResult(string Decision, string Seleccion, int Confianza, string Razonamiento, string Mercado, decimal CornersOverUnder, decimal TotalGoals);
 
 /// <summary>
 /// A self-criticism rule produced by Ollama when a prediction was wrong.

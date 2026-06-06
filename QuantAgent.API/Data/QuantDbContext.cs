@@ -58,6 +58,9 @@ public class QuantDbContext : DbContext
             entity.Property(e => e.Estado).HasColumnName("estado").HasConversion<int>();
             entity.Property(e => e.CreatedAt).HasColumnName("created_at");
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+            entity.Property(e => e.Mercado).HasColumnName("mercado").HasConversion<int>();
+            entity.Property(e => e.CornersOverUnder).HasColumnName("corners_over_under").HasColumnType("numeric(5,1)");
+            entity.Property(e => e.TotalGoals).HasColumnName("total_goals").HasColumnType("numeric(5,1)");
 
             entity.HasOne(e => e.Partido)
                   .WithMany()

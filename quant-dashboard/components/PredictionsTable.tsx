@@ -48,6 +48,17 @@ function estadoBadge(estado: string) {
   }
 }
 
+function mercadoBadge(mercado: string) {
+  switch (mercado) {
+    case "Corners":
+      return <>🎯 Córners</>;
+    case "Goles":
+      return <>⚽ Goles</>;
+    default:
+      return <>🏆 Ganador</>;
+  }
+}
+
 export default function PredictionsTable({
   activePredictions,
   historyPredictions,
@@ -106,6 +117,7 @@ export default function PredictionsTable({
             <tr className="border-b border-slate-700/60 bg-slate-900/80 text-xs font-medium uppercase tracking-wider text-slate-400">
               <th className="px-4 py-3">Fecha</th>
               <th className="px-4 py-3">Partido</th>
+              <th className="px-4 py-3">Mercado</th>
               <th className="px-4 py-3">Selección</th>
               <th className="px-4 py-3 text-right">Cuota</th>
               <th className="px-4 py-3 text-right">Confianza</th>
@@ -116,7 +128,7 @@ export default function PredictionsTable({
             {data.length === 0 ? (
               <tr>
                 <td
-                  colSpan={6}
+                colSpan={7}
                   className="px-4 py-10 text-center text-slate-500"
                 >
                   {tab === "active"
@@ -137,6 +149,13 @@ export default function PredictionsTable({
                     <td className="px-4 py-3 font-medium text-white">
                       {p.local} vs {p.visitante}
                     </td>
+                    <td className="px-4 py-3">
+                      <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium
+                        bg-slate-700/40 text-slate-300
+                      ">
+                        {mercadoBadge(p.mercado)}
+                      </span>
+                    </td>
                     <td className="px-4 py-3 text-slate-200">{p.seleccion}</td>
                     <td className="px-4 py-3 text-right tabular-nums text-slate-200">
                       {p.cuota.toFixed(3)}
@@ -151,7 +170,7 @@ export default function PredictionsTable({
 
                   {expandedRowId === p.id && (
                     <tr>
-                      <td colSpan={6} className="px-4 pb-4 pt-1">
+                      <td colSpan={7} className="px-4 pb-4 pt-1">
                         <div className="rounded-lg border border-slate-700/60 bg-slate-900 p-4">
                           <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
                             Razonamiento de la IA

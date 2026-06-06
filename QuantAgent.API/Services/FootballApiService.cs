@@ -204,6 +204,71 @@ public class FootballApiService
         return (homeOdds, drawOdds, awayOdds);
     }
 
+    /// <summary>
+    /// Fetches corners over/under odds from Bet365 for a given fixture.
+    /// Returns (0, 0) if the market is not available.
+    /// Typical bet name: "Corners O/U" or "Total Corners", threshold ~9.5.
+    /// </summary>
+    public async Task<(decimal OverOdds, decimal UnderOdds)> GetCornersOddsAsync(int fixtureId)
+    {
+        return await GetOverUnderOddsAsync(fixtureId, ["Total Corners", "Corners O/U", "Total Corner"]);
+    }
+
+    /// <summary>
+    /// Fetches goals over/under odds at the 2.5 threshold from Bet365.
+    /// Returns (0, 0) if the market is not available.
+    /// </summary>
+    public async Task<(decimal OverOdds, decimal UnderOdds)> GetGoalsOddsAsync(int fixtureId)
+    {
+        return await GetOverUnderOddsAsync(fixtureId, ["Over/Under"]);
+    }
+
+    /// <summary>
+    /// Generic helper: searches the Bet365 odds response for a named market
+    /// that contains "Over/Under" values and returns the first match.
+    /// </summary>
+    private async Task<(decimal OverOdds, decimal UnderOdds)> GetOverUnderOddsAsync(
+        int fixtureId, string[] marketNames)
+    {
+        var response = await _httpClient.GetAsync($"/odds?fixture={fixtureId}&bookmaker=8");
+        response.EnsureSuccessStatusCode();
+
+        var doc = await response.Content.ReadFromJsonAsync<OddsApiResponse>(JsonOptions);
+        var fixtureOdds = doc?.Response?.FirstOrDefault();
+        if (fixtureOdds is null) return (0m, 0m);
+
+        var bet365 = fixtureOdds.Bookmakers?.FirstOrDefault(b => b.Id == 8);
+        if (bet365 is null) return (0m, 0m);
+
+        // Find the first matching market
+        var market = bet365.Bets?.FirstOrDefault(b =>
+            marketNames.Any(n =>
+                b.Name.Contains(n, StringComparison.OrdinalIgnoreCase)));
+
+        if (market?.Values is null) return (0m, 0m);
+
+        static decimal ParseOdd(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return 0m;
+            return decimal.TryParse(raw,
+                System.Globalization.NumberStyles.Any,
+                System.Globalization.CultureInfo.InvariantCulture, out var val)
+                ? val
+                : 0m;
+        }
+
+        // Values come as entries like {"value": "Over 9.5", "odd": "1.80"}
+        var overOdd  = ParseOdd(market.Values.FirstOrDefault(v =>
+            v.Value.StartsWith("Over", StringComparison.OrdinalIgnoreCase))?.Odd);
+        var underOdd = ParseOdd(market.Values.FirstOrDefault(v =>
+            v.Value.StartsWith("Under", StringComparison.OrdinalIgnoreCase))?.Odd);
+
+        _logger.LogInformation(
+            "Over/Under odds for fixture {FixtureId} in '{Market}': Over={Over} Under={Under}",
+            fixtureId, market.Name, overOdd, underOdd);
+
+        return (overOdd, underOdd);
+    }
 
     // ---------- API-Football wire types ----------------------------------------
 

@@ -25,4 +25,7 @@ export interface PredictionDto {
   estado: string;
   creado: string;
   actualizado: string;
+  mercado: string;
+  cornersOverUnder: number;
+  totalGoals: number;
 }

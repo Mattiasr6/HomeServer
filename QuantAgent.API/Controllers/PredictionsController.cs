@@ -70,6 +70,9 @@ public class PredictionsController : ControllerBase
         Estado = p.Estado.ToString(),
         Creado = p.CreatedAt,
         Actualizado = p.UpdatedAt,
+        Mercado = p.Mercado.ToString(),
+        CornersOverUnder = p.CornersOverUnder,
+        TotalGoals = p.TotalGoals,
     };
 }
 
@@ -89,4 +92,7 @@ public class PredictionDto
     public string Estado { get; set; } = string.Empty;
     public DateTime Creado { get; set; }
     public DateTime Actualizado { get; set; }
+    public string Mercado { get; set; } = "Ganador";
+    public decimal CornersOverUnder { get; set; }
+    public decimal TotalGoals { get; set; }
 }
