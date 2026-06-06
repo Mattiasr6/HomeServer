@@ -12,8 +12,6 @@ services:
       POSTGRES_USER: quant_user
       POSTGRES_PASSWORD: quant_password_super_segura
       POSTGRES_DB: quant_agent
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     restart: unless-stopped
